@@ -30,7 +30,7 @@ SqlNode DruidSqlReplaceEof() :
     SqlNodeList clusteredBy = null;
     final Pair<SqlNodeList, SqlNodeList> p;
     SqlNode replaceTimeQuery = null;
-    String exportFileFormat = null;
+    SqlIdentifier exportFileFormat = null;
 }
 {
     <REPLACE> { s = span(); }
@@ -68,7 +68,7 @@ SqlNode DruidSqlReplaceEof() :
     ]
     source = OrderedQueryOrExpr(ExprContext.ACCEPT_QUERY)
     // PARTITIONED BY is necessary, but is kept optional in the grammar. It is asserted that it is not missing in the
-    // DruidSqlInsert constructor so that we can return a custom error message.
+    // IngestHandler#validate() so that we can return a custom error message.
     [
       <PARTITIONED> <BY>
       partitionedBy = PartitionGranularity()
@@ -77,11 +77,7 @@ SqlNode DruidSqlReplaceEof() :
       clusteredBy = ClusteredBy()
     ]
     {
-        if (clusteredBy != null && partitionedBy == null) {
-          throw org.apache.druid.sql.calcite.parser.DruidSqlParserUtils.problemParsing(
-            "CLUSTERED BY found before PARTITIONED BY, CLUSTERED BY must come after the PARTITIONED BY clause"
-          );
-        }
+
     }
     // EOF is also present in SqlStmtEof but EOF is a special case and a single EOF can be consumed multiple times.
     // The reason for adding EOF here is to ensure that we create a DruidSqlReplace node after the syntax has been
@@ -90,7 +86,7 @@ SqlNode DruidSqlReplaceEof() :
     <EOF>
     {
       sqlInsert = new SqlInsert(s.end(source), SqlNodeList.EMPTY, destination, source, columnList);
-      return DruidSqlReplace.create(sqlInsert, partitionedBy, clusteredBy, replaceTimeQuery, exportFileFormat);
+      return DruidSqlReplace.create(sqlInsert, partitionedBy, clusteredBy, exportFileFormat, replaceTimeQuery);
     }
 }
 

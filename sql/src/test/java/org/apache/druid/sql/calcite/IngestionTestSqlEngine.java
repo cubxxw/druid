@@ -56,13 +56,21 @@ public class IngestionTestSqlEngine implements SqlEngine
   }
 
   @Override
-  public RelDataType resultTypeForSelect(RelDataTypeFactory typeFactory, RelDataType validatedRowType)
+  public RelDataType resultTypeForSelect(
+      RelDataTypeFactory typeFactory,
+      RelDataType validatedRowType,
+      Map<String, Object> queryContext
+  )
   {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public RelDataType resultTypeForInsert(RelDataTypeFactory typeFactory, RelDataType validatedRowType)
+  public RelDataType resultTypeForInsert(
+      RelDataTypeFactory typeFactory,
+      RelDataType validatedRowType,
+      Map<String, Object> queryContext
+  )
   {
     // Matches the return structure of TestInsertQueryMaker.
     return typeFactory.createStructType(
@@ -75,7 +83,7 @@ public class IngestionTestSqlEngine implements SqlEngine
   }
 
   @Override
-  public boolean featureAvailable(final EngineFeature feature, final PlannerContext plannerContext)
+  public boolean featureAvailable(final EngineFeature feature)
   {
     switch (feature) {
       case CAN_SELECT:
@@ -85,6 +93,9 @@ public class IngestionTestSqlEngine implements SqlEngine
       case TIME_BOUNDARY_QUERY:
       case SCAN_NEEDS_SIGNATURE:
       case UNNEST:
+      case GROUPBY_IMPLICITLY_SORTS:
+      case WINDOW_FUNCTIONS:
+      case WINDOW_LEAF_OPERATOR:
         return false;
       case CAN_INSERT:
       case CAN_REPLACE:

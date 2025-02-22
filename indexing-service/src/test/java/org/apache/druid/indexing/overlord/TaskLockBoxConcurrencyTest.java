@@ -31,9 +31,13 @@ import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.metadata.DerbyMetadataStorageActionHandlerFactory;
-import org.apache.druid.metadata.EntryExistsException;
 import org.apache.druid.metadata.IndexerSQLMetadataStorageCoordinator;
 import org.apache.druid.metadata.TestDerbyConnector;
+import org.apache.druid.metadata.segment.SqlSegmentMetadataTransactionFactory;
+import org.apache.druid.metadata.segment.cache.NoopSegmentMetadataCache;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
+import org.apache.druid.segment.metadata.SegmentSchemaManager;
+import org.apache.druid.server.coordinator.simulate.TestDruidLeaderSelector;
 import org.joda.time.Interval;
 import org.junit.After;
 import org.junit.Assert;
@@ -58,6 +62,7 @@ public class TaskLockBoxConcurrencyTest
   private ExecutorService service;
   private TaskStorage taskStorage;
   private TaskLockbox lockbox;
+  private SegmentSchemaManager segmentSchemaManager;
 
   @Before
   public void setup()
@@ -74,9 +79,23 @@ public class TaskLockBoxConcurrencyTest
         )
     );
 
+    segmentSchemaManager = new SegmentSchemaManager(derby.metadataTablesConfigSupplier().get(), objectMapper, derbyConnector);
     lockbox = new TaskLockbox(
         taskStorage,
-        new IndexerSQLMetadataStorageCoordinator(objectMapper, derby.metadataTablesConfigSupplier().get(), derbyConnector)
+        new IndexerSQLMetadataStorageCoordinator(
+            new SqlSegmentMetadataTransactionFactory(
+                objectMapper,
+                derby.metadataTablesConfigSupplier().get(),
+                derbyConnector,
+                new TestDruidLeaderSelector(),
+                new NoopSegmentMetadataCache()
+            ),
+            objectMapper,
+            derby.metadataTablesConfigSupplier().get(),
+            derbyConnector,
+            segmentSchemaManager,
+            CentralizedDatasourceSchemaConfig.create()
+        )
     );
     service = Execs.multiThreaded(2, "TaskLockBoxConcurrencyTest-%d");
   }
@@ -100,7 +119,7 @@ public class TaskLockBoxConcurrencyTest
 
   @Test(timeout = 60_000L)
   public void testDoInCriticalSectionWithDifferentTasks()
-      throws ExecutionException, InterruptedException, EntryExistsException
+      throws ExecutionException, InterruptedException
   {
     final Interval interval = Intervals.of("2017-01-01/2017-01-02");
     final Task lowPriorityTask = NoopTask.ofPriority(10);

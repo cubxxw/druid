@@ -23,7 +23,7 @@ ARG JDK_VERSION=17
 # This is because it's not able to build the distribution on arm64 due to dependency problem of web-console. See: https://github.com/apache/druid/issues/13012
 # Since only java jars are shipped in the final image, it's OK to build the distribution on x64.
 # Once the web-console dependency problem is resolved, we can remove the --platform directive.
-FROM --platform=linux/amd64 maven:3.8.6-jdk-11-slim as builder
+FROM --platform=linux/amd64 maven:3.9 as builder
 
 # Rebuild from source in this stage
 # This can be unset if the tarball was already built outside of Docker
@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/root/.m2 if [ "$BUILD_FROM_SOURCE" = "true" ]; th
       install \
       -Pdist,bundle-contrib-exts \
       -Pskip-static-checks,skip-tests \
-      -Dmaven.javadoc.skip=true \
+      -Dmaven.javadoc.skip=true -T1C \
       ; fi
 
 RUN --mount=type=cache,target=/root/.m2 VERSION=$(mvn -B -q org.apache.maven.plugins:maven-help-plugin:3.2.0:evaluate \
@@ -82,15 +82,19 @@ RUN addgroup -S -g 1000 druid \
 COPY --from=bash-static /bin/bash /bin/bash
 RUN chmod 755 /bin/bash
 
-COPY --chown=druid:druid --from=builder /opt /opt
 COPY distribution/docker/druid.sh /druid.sh
 COPY distribution/docker/peon.sh /peon.sh
+COPY distribution/docker/deduplicate_jars.sh /deduplicate_jars.sh
 
 # create necessary directories which could be mounted as volume
+# copy and de-duplicate jars from builder in same layer to reduce image size
 #   /opt/druid/var is used to keep individual files(e.g. log) of each Druid service
 #   /opt/shared is used to keep segments and task logs shared among Druid services
-RUN mkdir /opt/druid/var /opt/shared \
- && chown druid:druid /opt/druid/var /opt/shared \
+RUN --mount=type=bind,from=builder,source=/opt,target=/builder/opt \
+ mkdir -p /opt/druid/var /opt/shared \
+ && cp -r /builder/opt/druid /opt/ \
+ && /deduplicate_jars.sh /opt/druid \
+ && chown -R druid:druid /opt/druid /opt/shared \
  && chmod 775 /opt/druid/var /opt/shared
 
 USER druid

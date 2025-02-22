@@ -20,10 +20,11 @@
 package org.apache.druid.segment;
 
 import com.google.common.collect.ImmutableList;
+import org.apache.druid.collections.BlockingPool;
 import org.apache.druid.collections.DefaultBlockingPool;
 import org.apache.druid.collections.StupidPool;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.data.input.MapBasedRow;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.Intervals;
@@ -42,6 +43,8 @@ import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.GroupByQueryConfig;
 import org.apache.druid.query.groupby.GroupByQueryQueryToolChest;
 import org.apache.druid.query.groupby.GroupByQueryRunnerFactory;
+import org.apache.druid.query.groupby.GroupByResourcesReservationPool;
+import org.apache.druid.query.groupby.GroupByStatsProvider;
 import org.apache.druid.query.groupby.GroupingEngine;
 import org.apache.druid.query.groupby.ResultRow;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
@@ -67,6 +70,15 @@ public class MapVirtualColumnGroupByTest extends InitializedNullHandlingTest
   public void setup() throws IOException
   {
     final IncrementalIndex incrementalIndex = MapVirtualColumnTestBase.generateIndex();
+    final GroupByQueryConfig config = new GroupByQueryConfig();
+
+    final BlockingPool<ByteBuffer> mergePool =
+        new DefaultBlockingPool<>(() -> ByteBuffer.allocate(1024), 1);
+    final GroupByStatsProvider groupByStatsProvider = new GroupByStatsProvider();
+
+    final GroupByResourcesReservationPool groupByResourcesReservationPool =
+        new GroupByResourcesReservationPool(mergePool, config);
+
     final GroupingEngine groupingEngine = new GroupingEngine(
         new DruidProcessingConfig()
         {
@@ -95,16 +107,17 @@ public class MapVirtualColumnGroupByTest extends InitializedNullHandlingTest
           }
         },
         GroupByQueryConfig::new,
-        new StupidPool<>("map-virtual-column-groupby-test", () -> ByteBuffer.allocate(1024)),
-        new DefaultBlockingPool<>(() -> ByteBuffer.allocate(1024), 1),
+        groupByResourcesReservationPool,
         TestHelper.makeJsonMapper(),
         new DefaultObjectMapper(),
-        QueryRunnerTestHelper.NOOP_QUERYWATCHER
+        QueryRunnerTestHelper.NOOP_QUERYWATCHER,
+        groupByStatsProvider
     );
 
     final GroupByQueryRunnerFactory factory = new GroupByQueryRunnerFactory(
         groupingEngine,
-        new GroupByQueryQueryToolChest(groupingEngine)
+        new GroupByQueryQueryToolChest(groupingEngine, groupByResourcesReservationPool),
+        new StupidPool<>("map-virtual-column-groupby-test", () -> ByteBuffer.allocate(1024))
     );
 
     runner = QueryRunnerTestHelper.makeQueryRunner(
@@ -134,10 +147,10 @@ public class MapVirtualColumnGroupByTest extends InitializedNullHandlingTest
     );
 
     Throwable t = Assert.assertThrows(
-        UnsupportedOperationException.class,
+        DruidException.class,
         () -> runner.run(QueryPlus.wrap(query)).toList()
     );
-    Assert.assertEquals("Map column doesn't support getRow()", t.getMessage());
+    Assert.assertEquals("Unable to group on the column[params]", t.getMessage());
   }
 
 
@@ -248,14 +261,7 @@ public class MapVirtualColumnGroupByTest extends InitializedNullHandlingTest
     );
 
     final List<ResultRow> result = runner.run(QueryPlus.wrap(query)).toList();
-    final List<ResultRow> expected;
-    if (NullHandling.sqlCompatible()) {
-      expected = Collections.emptyList();
-    } else {
-      expected = ImmutableList.of(
-          new MapBasedRow(DateTimes.of("2011-01-12T00:00:00.000Z"), MapVirtualColumnTestBase.mapOf("count", 2L))
-      ).stream().map(row -> ResultRow.fromLegacyRow(row, query)).collect(Collectors.toList());
-    }
+    final List<ResultRow> expected = Collections.emptyList();
 
     Assert.assertEquals(expected, result);
   }
@@ -279,14 +285,7 @@ public class MapVirtualColumnGroupByTest extends InitializedNullHandlingTest
     );
 
     final List<ResultRow> result = runner.run(QueryPlus.wrap(query)).toList();
-    final List<ResultRow> expected;
-    if (NullHandling.sqlCompatible()) {
-      expected = Collections.emptyList();
-    } else {
-      expected = ImmutableList.of(
-          new MapBasedRow(DateTimes.of("2011-01-12T00:00:00.000Z"), MapVirtualColumnTestBase.mapOf("count", 2L))
-      ).stream().map(row -> ResultRow.fromLegacyRow(row, query)).collect(Collectors.toList());
-    }
+    final List<ResultRow> expected = Collections.emptyList();
 
     Assert.assertEquals(expected, result);
   }

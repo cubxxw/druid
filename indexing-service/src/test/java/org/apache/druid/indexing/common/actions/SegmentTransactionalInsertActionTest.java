@@ -31,21 +31,17 @@ import org.apache.druid.indexing.overlord.SegmentPublishResult;
 import org.apache.druid.indexing.overlord.Segments;
 import org.apache.druid.indexing.overlord.TimeChunkLockRequest;
 import org.apache.druid.java.util.common.Intervals;
+import org.apache.druid.metadata.RetryTransactionException;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.partition.LinearShardSpec;
 import org.assertj.core.api.Assertions;
-import org.hamcrest.CoreMatchers;
 import org.joda.time.Interval;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 public class SegmentTransactionalInsertActionTest
 {
-  @Rule
-  public ExpectedException thrown = ExpectedException.none();
-
   @Rule
   public TaskActionTestKit actionTestKit = new TaskActionTestKit();
 
@@ -106,7 +102,8 @@ public class SegmentTransactionalInsertActionTest
     SegmentPublishResult result1 = SegmentTransactionalInsertAction.appendAction(
         ImmutableSet.of(SEGMENT1),
         new ObjectMetadata(null),
-        new ObjectMetadata(ImmutableList.of(1))
+        new ObjectMetadata(ImmutableList.of(1)),
+        null
     ).perform(
         task,
         actionTestKit.getTaskActionToolbox()
@@ -116,7 +113,8 @@ public class SegmentTransactionalInsertActionTest
     SegmentPublishResult result2 = SegmentTransactionalInsertAction.appendAction(
         ImmutableSet.of(SEGMENT2),
         new ObjectMetadata(ImmutableList.of(1)),
-        new ObjectMetadata(ImmutableList.of(2))
+        new ObjectMetadata(ImmutableList.of(2)),
+        null
     ).perform(
         task,
         actionTestKit.getTaskActionToolbox()
@@ -144,14 +142,20 @@ public class SegmentTransactionalInsertActionTest
     SegmentPublishResult result = SegmentTransactionalInsertAction.appendAction(
         ImmutableSet.of(SEGMENT1),
         new ObjectMetadata(ImmutableList.of(1)),
-        new ObjectMetadata(ImmutableList.of(2))
+        new ObjectMetadata(ImmutableList.of(2)),
+        null
     ).perform(
         task,
         actionTestKit.getTaskActionToolbox()
     );
 
     Assert.assertEquals(
-        SegmentPublishResult.fail("java.lang.RuntimeException: Failed to update the metadata Store. The new start metadata is ahead of last commited end state."),
+        SegmentPublishResult.fail(
+            new RetryTransactionException(
+                "The new start metadata state[ObjectMetadata{theObject=[1]}] is"
+                + " ahead of the last committed end state[null]. Try resetting the supervisor."
+            ).toString()
+        ),
         result
     );
   }
@@ -160,16 +164,15 @@ public class SegmentTransactionalInsertActionTest
   public void testFailBadVersion() throws Exception
   {
     final Task task = NoopTask.create();
-    final SegmentTransactionalInsertAction action = SegmentTransactionalInsertAction.overwriteAction(
-        null,
-        ImmutableSet.of(SEGMENT3)
-    );
+    final SegmentTransactionalInsertAction action = SegmentTransactionalInsertAction
+        .overwriteAction(null, ImmutableSet.of(SEGMENT3), null);
     actionTestKit.getTaskLockbox().add(task);
     acquireTimeChunkLock(TaskLockType.EXCLUSIVE, task, INTERVAL, 5000);
 
-    thrown.expect(IllegalStateException.class);
-    thrown.expectMessage(CoreMatchers.containsString("are not covered by locks"));
-    SegmentPublishResult result = action.perform(task, actionTestKit.getTaskActionToolbox());
-    Assert.assertEquals(SegmentPublishResult.ok(ImmutableSet.of(SEGMENT3)), result);
+    IllegalStateException exception = Assert.assertThrows(
+        IllegalStateException.class,
+        () -> action.perform(task, actionTestKit.getTaskActionToolbox())
+    );
+    Assert.assertTrue(exception.getMessage().contains("are not covered by locks"));
   }
 }

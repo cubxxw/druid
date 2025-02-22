@@ -27,7 +27,13 @@ import TabItem from '@theme/TabItem';
   ~ under the License.
   -->
 
-This topic describes the status and configuration API endpoints for [automatic compaction](../data-management/automatic-compaction.md) in Apache Druid. You can configure automatic compaction in the Druid web console or API.
+This topic describes the status and configuration API endpoints for [automatic compaction using Coordinator duties](../data-management/automatic-compaction.md#auto-compaction-using-coordinator-duties) in Apache Druid. You can configure automatic compaction in the Druid web console or API.
+
+:::info Experimental
+
+Instead of the automatic compaction API, you can use the supervisor API to submit auto-compaction jobs using compaction supervisors. For more information, see [Auto-compaction using compaction supervisors](../data-management/automatic-compaction.md#auto-compaction-using-compaction-supervisors).
+
+:::
 
 In this topic, `http://ROUTER_IP:ROUTER_PORT` is a placeholder for your Router service address and port. Replace it with the information for your deployment. For example, use `http://localhost:8888` for quickstart deployments.
 
@@ -43,7 +49,7 @@ Note that this endpoint returns an HTTP `200 OK` message code even if the dataso
 
 #### URL
 
-<code class="postAPI">POST</code> <code>/druid/coordinator/v1/config/compaction</code>
+`POST` `/druid/coordinator/v1/config/compaction`
 
 #### Responses
 
@@ -132,7 +138,7 @@ Removes the automatic compaction configuration for a datasource. This updates th
 
 #### URL
 
-<code class="deleteAPI">DELETE</code> <code>/druid/coordinator/v1/config/compaction/:dataSource</code>
+`DELETE` `/druid/coordinator/v1/config/compaction/{dataSource}`
 
 #### Responses
 
@@ -190,7 +196,7 @@ Note that while the max compaction tasks can theoretically be set to 2147483647,
 
 #### URL
 
-<code class="postAPI">POST</code> <code>/druid/coordinator/v1/config/compaction/taskslots</code>
+`POST` `/druid/coordinator/v1/config/compaction/taskslots`
 
 #### Query parameters
 
@@ -262,7 +268,7 @@ You can use this endpoint to retrieve `compactionTaskSlotRatio` and `maxCompacti
 
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/coordinator/v1/config/compaction</code>
+`GET` `/druid/coordinator/v1/config/compaction`
 
 #### Responses
 
@@ -304,7 +310,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
 ```json
 {
@@ -411,7 +417,7 @@ Retrieves the automatic compaction configuration for a datasource.
 
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/coordinator/v1/config/compaction/:dataSource</code>
+`GET` `/druid/coordinator/v1/config/compaction/{dataSource}`
 
 #### Responses
 
@@ -461,7 +467,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
 ```json
 {
@@ -523,7 +529,7 @@ The response contains a list of objects with the following keys:
 
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/coordinator/v1/config/compaction/:dataSource/history</code>
+`GET` `/druid/coordinator/v1/config/compaction/{dataSource}/history`
 
 #### Query parameters
 * `interval` (optional)
@@ -579,7 +585,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
 ```json
 [
@@ -683,7 +689,7 @@ Returns the total size of segments awaiting compaction for a given datasource. R
 
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/coordinator/v1/compaction/progress?dataSource=:dataSource</code>
+`GET` `/druid/coordinator/v1/compaction/progress?dataSource={dataSource}`
 
 #### Query parameter
 * `dataSource` (required)
@@ -738,7 +744,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
 ```json
 {
@@ -767,7 +773,7 @@ The `latestStatus` object has the following properties:
 
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/coordinator/v1/compaction/status</code>
+`GET` `/druid/coordinator/v1/compaction/status`
 
 #### Query parameters
 * `dataSource` (optional)
@@ -813,7 +819,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
 ```json
 {

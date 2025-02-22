@@ -16,7 +16,8 @@
  * limitations under the License.
  */
 
-import { dedupe } from '@druid-toolkit/query';
+import type { CancelToken } from 'axios';
+import { dedupe, F, SqlExpression, SqlFunction } from 'druid-query-toolkit';
 import * as JSONBig from 'json-bigint-native';
 
 import type {
@@ -36,9 +37,11 @@ import {
   DETECTION_TIMESTAMP_SPEC,
   getDimensionNamesFromTransforms,
   getDimensionSpecName,
+  getFlattenSpec,
   getSpecType,
   getTimestampSchema,
   isDruidSource,
+  isFixedFormatSource,
   PLACEHOLDER_TIMESTAMP_SPEC,
   REINDEX_TIMESTAMP_SPEC,
   TIME_COLUMN,
@@ -72,16 +75,18 @@ export interface SampleResponse {
   numRowsRead: number;
 }
 
+export type TimeColumnAction = 'preserve' | 'ignore' | 'ignoreIfZero';
+
 export function getHeaderNamesFromSampleResponse(
   sampleResponse: SampleResponse,
-  timeColumnAction: 'preserve' | 'ignore' | 'ignoreIfZero' = 'preserve',
+  timeColumnAction: TimeColumnAction = 'preserve',
 ): string[] {
   return getHeaderFromSampleResponse(sampleResponse, timeColumnAction).map(s => s.name);
 }
 
 export function getHeaderFromSampleResponse(
   sampleResponse: SampleResponse,
-  timeColumnAction: 'preserve' | 'ignore' | 'ignoreIfZero' = 'preserve',
+  timeColumnAction: TimeColumnAction = 'preserve',
 ): { name: string; type: string }[] {
   const ignoreTimeColumn =
     timeColumnAction === 'ignore' ||
@@ -133,7 +138,7 @@ export interface SampleEntry {
 export function getCacheRowsFromSampleResponse(sampleResponse: SampleResponse): CacheRows {
   return filterMap(sampleResponse.data, d => ({
     ...d.input,
-    ...allowKeys<any>(d.parsed, ALL_POSSIBLE_SYSTEM_FIELDS),
+    ...allowKeys<any>(d.parsed || {}, ALL_POSSIBLE_SYSTEM_FIELDS),
   })).slice(0, 20);
 }
 
@@ -157,7 +162,7 @@ export function applyCache(sampleSpec: SampleSpec, cacheRows: CacheRows) {
     data: cacheRows.map(r => JSONBig.stringify(r)).join('\n'),
   });
 
-  const flattenSpec = deepGet(sampleSpec, 'spec.ioConfig.inputFormat.flattenSpec');
+  const flattenSpec = getFlattenSpec(sampleSpec);
   let inputFormat: InputFormat = { type: 'json', keepNullColumns: true };
   if (flattenSpec) {
     inputFormat = deepSet(inputFormat, 'flattenSpec', flattenSpec);
@@ -184,12 +189,15 @@ export async function getProxyOverlordModules(): Promise<string[]> {
 export async function postToSampler(
   sampleSpec: SampleSpec,
   forStr: string,
+  cancelToken?: CancelToken,
 ): Promise<SampleResponse> {
-  sampleSpec = fixSamplerTypes(sampleSpec);
+  sampleSpec = fixSamplerLookups(fixSamplerTypes(sampleSpec));
 
   let sampleResp: any;
   try {
-    sampleResp = await Api.instance.post(`/druid/indexer/v1/sampler?for=${forStr}`, sampleSpec);
+    sampleResp = await Api.instance.post(`/druid/indexer/v1/sampler?for=${forStr}`, sampleSpec, {
+      cancelToken,
+    });
   } catch (e) {
     throw new Error(getDruidErrorMessage(e));
   }
@@ -250,6 +258,11 @@ const KAFKA_SAMPLE_INPUT_FORMAT: InputFormat = {
   valueFormat: WHOLE_ROW_INPUT_FORMAT,
 };
 
+const KINESIS_SAMPLE_INPUT_FORMAT: InputFormat = {
+  type: 'kinesis',
+  valueFormat: WHOLE_ROW_INPUT_FORMAT,
+};
+
 export async function sampleForConnect(
   spec: Partial<IngestionSpec>,
   sampleStrategy: SampleStrategy,
@@ -261,15 +274,19 @@ export async function sampleForConnect(
     sampleStrategy,
   );
 
-  const reingestMode = isDruidSource(spec);
-  if (!reingestMode) {
+  if (!isFixedFormatSource(spec)) {
     ioConfig = deepSet(
       ioConfig,
       'inputFormat',
-      samplerType === 'kafka' ? KAFKA_SAMPLE_INPUT_FORMAT : WHOLE_ROW_INPUT_FORMAT,
+      samplerType === 'kafka'
+        ? KAFKA_SAMPLE_INPUT_FORMAT
+        : samplerType === 'kinesis'
+        ? KINESIS_SAMPLE_INPUT_FORMAT
+        : WHOLE_ROW_INPUT_FORMAT,
     );
   }
 
+  const reingestMode = isDruidSource(spec);
   const sampleSpec: SampleSpec = {
     type: samplerType,
     spec: {
@@ -278,7 +295,7 @@ export async function sampleForConnect(
       dataSchema: {
         dataSource: 'sample',
         timestampSpec: reingestMode ? REINDEX_TIMESTAMP_SPEC : PLACEHOLDER_TIMESTAMP_SPEC,
-        dimensionsSpec: {},
+        dimensionsSpec: { useSchemaDiscovery: true },
         granularitySpec: {
           rollup: false,
         },
@@ -452,13 +469,17 @@ export async function sampleForTimestamp(
 export async function sampleForTransform(
   spec: Partial<IngestionSpec>,
   cacheRows: CacheRows,
+  forceSegmentSortByTime: boolean,
 ): Promise<SampleResponse> {
   const samplerType = getSpecType(spec);
   const timestampSpec: TimestampSpec = deepGet(spec, 'spec.dataSchema.timestampSpec');
   const transforms: Transform[] = deepGet(spec, 'spec.dataSchema.transformSpec.transforms') || [];
 
   // Extra step to simulate auto-detecting dimension with transforms
-  let specialDimensionSpec: DimensionsSpec = { useSchemaDiscovery: true };
+  let specialDimensionSpec: DimensionsSpec = {
+    useSchemaDiscovery: true,
+    forceSegmentSortByTime,
+  };
   if (transforms && transforms.length) {
     const sampleSpecHack: SampleSpec = {
       type: samplerType,
@@ -620,4 +641,68 @@ export async function sampleForSchema(
   };
 
   return postToSampler(applyCache(sampleSpec, cacheRows), 'schema');
+}
+
+function fixSamplerLookups(sampleSpec: SampleSpec): SampleSpec {
+  const transforms: Transform[] | undefined = deepGet(
+    sampleSpec,
+    'spec.dataSchema.transformSpec.transforms',
+  );
+  if (!Array.isArray(transforms)) return sampleSpec;
+
+  return deepSet(
+    sampleSpec,
+    'spec.dataSchema.transformSpec.transforms',
+    transforms.map(transform => {
+      const { expression } = transform;
+      if (typeof expression !== 'string') return transform;
+      return { ...transform, expression: changeLookupInExpressionsSampling(expression) };
+    }),
+  );
+}
+
+/**
+ * Lookups do not work in the sampler because they are not loaded in the Overlord
+ * to prevent the user from getting an error like "Unknown lookup [lookup name]" we
+ * change the lookup expression to a placeholder
+ *
+ * lookup("x", 'lookup_name') => concat('lookup_name', '[', "x", '] -- This is a placeholder, lookups are not supported in sampling')
+ * lookup("x", 'lookup_name', 'replaceValue') => nvl(concat('lookup_name', '[', "x", '] -- This is a placeholder, lookups are not supported in sampling'), 'replaceValue')
+ */
+export function changeLookupInExpressionsSampling(druidExpression: string): string {
+  if (!druidExpression.includes('lookup')) return druidExpression;
+
+  // The Druid expressions are very close to SQL so try parsing them as SQL, if it parses then this is a more robust way to apply this transformation
+  const parsedDruidExpression = SqlExpression.maybeParse(druidExpression);
+  if (parsedDruidExpression) {
+    return String(
+      parsedDruidExpression.walk(ex => {
+        if (ex instanceof SqlFunction && ex.getEffectiveFunctionName() === 'LOOKUP') {
+          if (ex.numArgs() < 2 || ex.numArgs() > 3) return SqlExpression.parse('null');
+          const concat = F(
+            'concat',
+            ex.getArg(1),
+            '[',
+            ex.getArg(0),
+            '] -- This is a placeholder, lookups are not supported in sampling',
+          );
+
+          const replaceMissingValueWith = ex.getArg(2);
+          if (!replaceMissingValueWith) return concat;
+          return F('nvl', concat, replaceMissingValueWith);
+        }
+        return ex;
+      }),
+    );
+  }
+
+  // If we can not parse the expression as SQL then bash it with a regexp
+  return druidExpression.replace(/lookup\s*\(([^)]+)\)/g, (_, argString: string) => {
+    const args = argString.trim().split(/\s*,\s*/);
+    if (args.length < 2 || args.length > 3) return 'null';
+    const concat = `concat(${args[1]},'[',${args[0]},'] -- This is a placeholder, lookups are not supported in sampling')`;
+    const replaceMissingValueWith = args[2];
+    if (!replaceMissingValueWith) return concat;
+    return `nvl(${concat},${replaceMissingValueWith})`;
+  });
 }

@@ -24,39 +24,57 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
-import org.apache.druid.common.config.NullHandling;
+import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.error.DruidExceptionMatcher;
 import org.apache.druid.hll.HyperLogLogCollector;
 import org.apache.druid.indexing.common.TaskLockType;
 import org.apache.druid.indexing.common.task.Tasks;
+import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.granularity.Granularities;
+import org.apache.druid.java.util.common.granularity.Granularity;
+import org.apache.druid.msq.indexing.MSQControllerTask;
+import org.apache.druid.msq.indexing.MSQSpec;
+import org.apache.druid.msq.indexing.MSQTuningConfig;
+import org.apache.druid.msq.indexing.destination.DataSourceMSQDestination;
 import org.apache.druid.msq.indexing.error.ColumnNameRestrictedFault;
 import org.apache.druid.msq.indexing.error.RowTooLargeFault;
+import org.apache.druid.msq.indexing.error.TooManySegmentsInTimeChunkFault;
+import org.apache.druid.msq.indexing.report.MSQSegmentReport;
 import org.apache.druid.msq.kernel.WorkerAssignmentStrategy;
+import org.apache.druid.msq.sql.MSQTaskQueryMaker;
 import org.apache.druid.msq.test.CounterSnapshotMatcher;
 import org.apache.druid.msq.test.MSQTestBase;
-import org.apache.druid.msq.test.MSQTestFileUtils;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.aggregation.hyperloglog.HyperUniquesAggregatorFactory;
+import org.apache.druid.query.dimension.DefaultDimensionSpec;
+import org.apache.druid.query.groupby.GroupByQuery;
+import org.apache.druid.query.groupby.orderby.DefaultLimitSpec;
+import org.apache.druid.query.groupby.orderby.OrderByColumnSpec;
+import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.column.ValueType;
+import org.apache.druid.server.lookup.cache.LookupLoadingSpec;
+import org.apache.druid.sql.calcite.planner.ColumnMapping;
+import org.apache.druid.sql.calcite.planner.ColumnMappings;
+import org.apache.druid.sql.calcite.util.CalciteTests;
 import org.apache.druid.timeline.SegmentId;
+import org.apache.druid.timeline.partition.NumberedShardSpec;
 import org.hamcrest.CoreMatchers;
-import org.junit.Test;
 import org.junit.internal.matchers.ThrowableMessageMatcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mockito;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -67,7 +85,6 @@ import java.util.Set;
 import java.util.TreeSet;
 
 
-@RunWith(Parameterized.class)
 public class MSQInsertTest extends MSQTestBase
 {
 
@@ -82,11 +99,11 @@ public class MSQInsertTest extends MSQTestBase
                   .build();
   private final HashFunction fn = Hashing.murmur3_128();
 
-  @Parameterized.Parameters(name = "{index}:with context {0}")
   public static Collection<Object[]> data()
   {
     Object[][] data = new Object[][]{
         {DEFAULT, DEFAULT_MSQ_CONTEXT},
+        {SUPERUSER, SUPERUSER_MSQ_CONTEXT},
         {DURABLE_STORAGE, DURABLE_STORAGE_MSQ_CONTEXT},
         {FAULT_TOLERANCE, FAULT_TOLERANCE_MSQ_CONTEXT},
         {PARALLEL_MERGE, PARALLEL_MERGE_MSQ_CONTEXT},
@@ -95,14 +112,9 @@ public class MSQInsertTest extends MSQTestBase
     return Arrays.asList(data);
   }
 
-  @Parameterized.Parameter(0)
-  public String contextName;
-
-  @Parameterized.Parameter(1)
-  public Map<String, Object> context;
-
-  @Test
-  public void testInsertOnFoo1()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = expectedFooRows();
     int expectedCounterRows = expectedRows.size();
@@ -118,8 +130,14 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(context)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedRows)
+                     .setExpectedMSQSegmentReport(
+                         new MSQSegmentReport(
+                             NumberedShardSpec.class.getSimpleName(),
+                             "Using NumberedShardSpec to generate segments since the query is inserting rows."
+                         )
+                     )
                      .setExpectedCountersForStageWorkerChannel(
                          CounterSnapshotMatcher
                              .with().totalFiles(1),
@@ -154,8 +172,107 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertWithExistingTimeColumn() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithSpec(String contextName, Map<String, Object> context)
+  {
+    List<Object[]> expectedRows = expectedFooRows();
+    int expectedCounterRows = expectedRows.size();
+    long[] expectedArray = createExpectedFrameArray(expectedCounterRows, 1);
+
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("dim1", ColumnType.STRING)
+                                            .add("cnt", ColumnType.LONG).build();
+
+    MSQSpec msqSpec = new MSQSpec(
+        GroupByQuery.builder()
+                    .setDataSource("foo")
+                    .setInterval(Intervals.ONLY_ETERNITY)
+                    .setDimFilter(notNull("dim1"))
+                    .setGranularity(Granularities.ALL)
+                    .setDimensions(
+                        new DefaultDimensionSpec("__time", "d0", ColumnType.LONG),
+                        new DefaultDimensionSpec("dim1", "d1", ColumnType.STRING)
+                    )
+                    .setContext(ImmutableMap.<String, Object>builder()
+                                            .put("__user", "allowAll")
+                                            .put("finalize", true)
+                                            .put("maxNumTasks", 2)
+                                            .put("maxParseExceptions", 0)
+                                            .put("sqlInsertSegmentGranularity", "\"DAY\"")
+                                            .put("sqlQueryId", "test-query")
+                                            .put("sqlStringifyArrays", false)
+                                            .build()
+                    )
+                    .setLimitSpec(DefaultLimitSpec.builder()
+                                                  .orderBy(OrderByColumnSpec.asc("d1"))
+                                                  .build()
+                    )
+                    .setAggregatorSpecs(new CountAggregatorFactory("a0"))
+                    .setQuerySegmentSpec(new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY))
+                    .build(),
+        new ColumnMappings(
+            ImmutableList.of(
+                new ColumnMapping("d0", "__time"),
+                new ColumnMapping("d1", "dim1"),
+                new ColumnMapping("a0", "cnt"))
+        ),
+        new DataSourceMSQDestination(
+            "foo1",
+            Granularity.fromString("DAY"),
+            null,
+            null,
+            null,
+            null
+        ),
+        WorkerAssignmentStrategy.MAX,
+        MSQTuningConfig.defaultConfig()
+    );
+
+    ImmutableMap<String, Object> sqlContext =
+        ImmutableMap.<String, Object>builder()
+            .putAll(context)
+                    .put("sqlInsertSegmentGranularity", "\"DAY\"")
+                    .put("forceTimeChunkLock", true)
+                    .build();
+
+    MSQControllerTask controllerTask = new MSQControllerTask(
+        TEST_CONTROLLER_TASK_ID,
+        msqSpec,
+        null,
+        sqlContext,
+        null,
+        ImmutableList.of(SqlTypeName.TIMESTAMP, SqlTypeName.VARCHAR, SqlTypeName.BIGINT),
+        ImmutableList.of(ColumnType.LONG, ColumnType.STRING, ColumnType.LONG),
+        null
+        );
+
+    testIngestQuery().setTaskSpec(controllerTask)
+                     .setExpectedDataSource("foo1")
+                     .setQueryContext(context)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(expectedFooSegments())
+                     .setExpectedResultRows(expectedRows)
+                     .setExpectedMSQSegmentReport(
+                         new MSQSegmentReport(
+                             NumberedShardSpec.class.getSimpleName(),
+                             "Using NumberedShardSpec to generate segments since the query is inserting rows."
+                         )
+                     )
+                     .setExpectedSegmentGenerationProgressCountersForStageWorker(
+                         CounterSnapshotMatcher
+                             .with().segmentRowsProcessed(Arrays.stream(expectedArray).sum()),
+                         2, 0
+                     )
+                     .setExpectedLookupLoadingSpec(LookupLoadingSpec.ALL)
+                     .verifyResults();
+
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWithExistingTimeColumn(String contextName, Map<String, Object> context) throws IOException
   {
     List<Object[]> expectedRows = ImmutableList.of(
         new Object[] {1678897351000L, "A"},
@@ -168,9 +285,7 @@ public class MSQInsertTest extends MSQTestBase
                                             .add("flags", ColumnType.STRING)
                                             .build();
 
-    final File toRead = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this,
-                                                                    "/dataset-with-time-column.json"
-    );
+    final File toRead = getResourceAsTemporaryFile("/dataset-with-time-column.json");
     final String toReadFileNameAsJson = queryFramework().queryJsonMapper().writeValueAsString(toRead.getAbsolutePath());
 
     testIngestQuery().setSql(" INSERT INTO foo1 SELECT\n"
@@ -193,8 +308,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertWithUnnestInline()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWithUnnestInline(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = ImmutableList.of(
         new Object[]{1692226800000L, 1L},
@@ -218,8 +334,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertWithUnnest()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWithUnnest(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = ImmutableList.of(
         new Object[]{946684800000L, "a"},
@@ -227,7 +344,7 @@ public class MSQInsertTest extends MSQTestBase
         new Object[]{946771200000L, "b"},
         new Object[]{946771200000L, "c"},
         new Object[]{946857600000L, "d"},
-        new Object[]{978307200000L, NullHandling.sqlCompatible() ? "" : null},
+        new Object[]{978307200000L, ""},
         new Object[]{978393600000L, null},
         new Object[]{978480000000L, null}
     );
@@ -248,8 +365,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertWithUnnestWithVirtualColumns()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWithUnnestWithVirtualColumns(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = ImmutableList.of(
         new Object[]{946684800000L, 1.0f},
@@ -282,10 +400,11 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertOnExternalDataSource() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnExternalDataSource(String contextName, Map<String, Object> context) throws IOException
   {
-    final File toRead = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/wikipedia-sampled.json");
+    final File toRead = getResourceAsTemporaryFile("/wikipedia-sampled.json");
     final String toReadFileNameAsJson = queryFramework().queryJsonMapper().writeValueAsString(toRead.getAbsolutePath());
 
     RowSignature rowSignature = RowSignature.builder()
@@ -306,7 +425,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of(
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of(
                          "foo1",
                          Intervals.of("2016-06-27/P1D"),
                          "test",
@@ -347,8 +466,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertOnFoo1WithGroupByLimitWithoutClusterBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithGroupByLimitWithoutClusterBy(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = expectedFooRows();
     int expectedCounterRows = expectedRows.size();
@@ -363,7 +483,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(context)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedRows)
                      .setExpectedCountersForStageWorkerChannel(
                          CounterSnapshotMatcher
@@ -395,8 +515,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertOnFoo1WithTwoCountAggregatorsWithRollupContext()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithTwoCountAggregatorsWithRollupContext(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = expectedFooRows();
 
@@ -426,7 +547,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(QueryContexts.override(context, ROLLUP_CONTEXT_PARAMS))
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedRows)
                      .setExpectedRollUp(true)
                      .addExpectedAggregatorFactory(new LongSumAggregatorFactory("cnt", "cnt"))
@@ -434,8 +555,9 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1WithGroupByLimitWithClusterBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithGroupByLimitWithClusterBy(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = expectedFooRows();
     int expectedCounterRows = expectedRows.size();
@@ -450,7 +572,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(context)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedRows)
                      .setExpectedCountersForStageWorkerChannel(
                          CounterSnapshotMatcher
@@ -485,8 +607,10 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
 
   }
-  @Test
-  public void testInsertOnFoo1WithTimeFunction()
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithTimeFunction(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -498,14 +622,15 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedFooRows())
                      .verifyResults();
 
   }
 
-  @Test
-  public void testInsertOnFoo1WithTimeAggregator()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithTimeAggregator(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -520,7 +645,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(
+                     .setExpectedSegments(
                          ImmutableSet.of(
                              SegmentId.of("foo1", Intervals.of("1970-01-01/P1D"), "test", 0)
                          )
@@ -534,8 +659,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertOnFoo1WithTimeAggregatorAndMultipleWorkers()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithTimeAggregatorAndMultipleWorkers(String contextName, Map<String, Object> context)
   {
     Map<String, Object> localContext = new HashMap<>(context);
     localContext.put(MultiStageQueryContext.CTX_TASK_ASSIGNMENT_STRATEGY, WorkerAssignmentStrategy.MAX.name());
@@ -554,7 +680,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(localContext)
-                     .setExpectedSegment(
+                     .setExpectedSegments(
                          ImmutableSet.of(
                              SegmentId.of("foo1", Intervals.of("1970-01-01/P1D"), "test", 0)
                          )
@@ -568,8 +694,9 @@ public class MSQInsertTest extends MSQTestBase
   }
 
 
-  @Test
-  public void testInsertOnFoo1WithTimePostAggregator()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithTimePostAggregator(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -585,7 +712,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(
+                     .setExpectedSegments(
                          ImmutableSet.of(
                              SegmentId.of("foo1", Intervals.of("1999-12-31T/P1D"), "test", 0)
                          )
@@ -599,8 +726,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertOnFoo1WithTimeFunctionWithSequential()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithTimeFunctionWithSequential(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = expectedFooRows();
     int expectedCounterRows = expectedRows.size();
@@ -610,7 +738,7 @@ public class MSQInsertTest extends MSQTestBase
                                             .add("__time", ColumnType.LONG)
                                             .add("dim1", ColumnType.STRING)
                                             .add("cnt", ColumnType.LONG).build();
-    Map<String, Object> context = ImmutableMap.<String, Object>builder()
+    Map<String, Object> newContext = ImmutableMap.<String, Object>builder()
                                               .putAll(DEFAULT_MSQ_CONTEXT)
                                               .put(
                                                   MultiStageQueryContext.CTX_CLUSTER_STATISTICS_MERGE_MODE,
@@ -620,11 +748,11 @@ public class MSQInsertTest extends MSQTestBase
 
     testIngestQuery().setSql(
                          "insert into foo1 select  floor(__time to day) as __time , dim1 , count(*) as cnt from foo where dim1 is not null group by 1, 2 PARTITIONED by day clustered by dim1")
-                     .setQueryContext(context)
+                     .setQueryContext(newContext)
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
-                     .setQueryContext(MSQInsertTest.this.context)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setQueryContext(context)
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedRows)
                      .setExpectedCountersForStageWorkerChannel(
                          CounterSnapshotMatcher
@@ -660,8 +788,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertOnFoo1WithMultiValueDim()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithMultiValueDim(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -672,13 +801,14 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedMultiValueFooRows())
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1MultiValueDimWithLimitWithoutClusterBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1MultiValueDimWithLimitWithoutClusterBy(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -689,13 +819,14 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedMultiValueFooRows())
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1MultiValueDimWithLimitWithClusterBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1MultiValueDimWithLimitWithClusterBy(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -706,13 +837,14 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedMultiValueFooRows())
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1WithMultiValueDimGroupBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithMultiValueDimGroupBy(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -723,13 +855,14 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(expectedMultiValueFooRowsGroupBy())
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1WithMultiValueMeasureGroupBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithMultiValueMeasureGroupBy(String contextName, Map<String, Object> context)
   {
     testIngestQuery().setSql(
                          "INSERT INTO foo1 SELECT count(dim3) FROM foo WHERE dim3 IS NOT NULL GROUP BY 1 PARTITIONED BY ALL TIME")
@@ -742,9 +875,9 @@ public class MSQInsertTest extends MSQTestBase
   }
 
 
-
-  @Test
-  public void testInsertOnFoo1WithAutoTypeArrayGroupBy()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithAutoTypeArrayGroupBy(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -758,15 +891,9 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(adjustedContext)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(
-                         NullHandling.replaceWithDefault() ?
                          ImmutableList.of(
-                             new Object[]{0L, null},
-                             new Object[]{0L, new Object[]{"a", "b"}},
-                             new Object[]{0L, new Object[]{"b", "c"}},
-                             new Object[]{0L, new Object[]{"d"}}
-                         ) : ImmutableList.of(
                              new Object[]{0L, null},
                              new Object[]{0L, new Object[]{"a", "b"}},
                              new Object[]{0L, new Object[]{""}},
@@ -777,8 +904,9 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1WithArrayIngestModeArrayGroupByInsertAsArray()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithArrayIngestModeArrayGroupByInsertAsArray(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -793,15 +921,9 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(adjustedContext)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(
-                         NullHandling.replaceWithDefault() ?
                          ImmutableList.of(
-                             new Object[]{0L, null},
-                             new Object[]{0L, new Object[]{"a", "b"}},
-                             new Object[]{0L, new Object[]{"b", "c"}},
-                             new Object[]{0L, new Object[]{"d"}}
-                         ) : ImmutableList.of(
                              new Object[]{0L, null},
                              new Object[]{0L, new Object[]{"a", "b"}},
                              new Object[]{0L, new Object[]{""}},
@@ -812,8 +934,9 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1WithArrayIngestModeArrayGroupByInsertAsMvd()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithArrayIngestModeArrayGroupByInsertAsMvd(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -828,15 +951,9 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(adjustedContext)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
                      .setExpectedResultRows(
-                         NullHandling.replaceWithDefault() ?
                          ImmutableList.of(
-                             new Object[]{0L, null},
-                             new Object[]{0L, Arrays.asList("a", "b")},
-                             new Object[]{0L, Arrays.asList("b", "c")},
-                             new Object[]{0L, "d"}
-                         ) : ImmutableList.of(
                              new Object[]{0L, null},
                              new Object[]{0L, ""},
                              new Object[]{0L, Arrays.asList("a", "b")},
@@ -847,8 +964,9 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testInsertOnFoo1WithMultiValueDimGroupByWithoutGroupByEnable()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithMultiValueDimGroupByWithoutGroupByEnable(String contextName, Map<String, Object> context)
   {
     Map<String, Object> localContext = ImmutableMap.<String, Object>builder()
                                                    .putAll(context)
@@ -868,8 +986,9 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyExecutionError();
   }
 
-  @Test
-  public void testRollUpOnFoo1UpOnFoo1()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testRollUpOnFoo1UpOnFoo1(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = expectedFooRows();
     int expectedCounterRows = expectedRows.size();
@@ -889,7 +1008,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedRollUp(true)
                      .addExpectedAggregatorFactory(new LongSumAggregatorFactory("cnt", "cnt"))
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedRows)
                      .setExpectedCountersForStageWorkerChannel(
                          CounterSnapshotMatcher
@@ -925,8 +1044,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testRollUpOnFoo1WithTimeFunction()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testRollUpOnFoo1WithTimeFunction(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = expectedFooRows();
     int expectedCounterRows = expectedRows.size();
@@ -946,7 +1066,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedQueryGranularity(Granularities.DAY)
                      .addExpectedAggregatorFactory(new LongSumAggregatorFactory("cnt", "cnt"))
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedRows)
                      .setExpectedCountersForStageWorkerChannel(
                          CounterSnapshotMatcher
@@ -982,8 +1102,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertWithClusteredByDescendingThrowsException()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWithClusteredByDescendingThrowsException(String contextName, Map<String, Object> context)
   {
     // Add a DESC clustered by column, which should not be allowed
     testIngestQuery().setSql("INSERT INTO foo1 "
@@ -999,8 +1120,9 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyPlanningErrors();
   }
 
-  @Test
-  public void testRollUpOnFoo1WithTimeFunctionComplexCol()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testRollUpOnFoo1WithTimeFunctionComplexCol(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -1018,15 +1140,16 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedQueryGranularity(Granularities.DAY)
                      .addExpectedAggregatorFactory(new HyperUniquesAggregatorFactory("cnt", "cnt", false, true))
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedFooRowsWithAggregatedComplexColumn())
                      .verifyResults();
 
   }
 
 
-  @Test
-  public void testRollUpOnFoo1ComplexCol()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testRollUpOnFoo1ComplexCol(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -1042,16 +1165,17 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedRollUp(true)
                      .addExpectedAggregatorFactory(new HyperUniquesAggregatorFactory("cnt", "cnt", false, true))
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(expectedFooSegments())
+                     .setExpectedSegments(expectedFooSegments())
                      .setExpectedResultRows(expectedFooRowsWithAggregatedComplexColumn())
                      .verifyResults();
 
   }
 
-  @Test
-  public void testRollUpOnExternalDataSource() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testRollUpOnExternalDataSource(String contextName, Map<String, Object> context) throws IOException
   {
-    final File toRead = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/wikipedia-sampled.json");
+    final File toRead = getResourceAsTemporaryFile("/wikipedia-sampled.json");
     final String toReadFileNameAsJson = queryFramework().queryJsonMapper().writeValueAsString(toRead.getAbsolutePath());
 
     RowSignature rowSignature = RowSignature.builder()
@@ -1075,7 +1199,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .addExpectedAggregatorFactory(new LongSumAggregatorFactory("cnt", "cnt"))
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of(
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of(
                          "foo1",
                          Intervals.of("2016-06-27/P1D"),
                          "test",
@@ -1115,10 +1239,11 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test()
-  public void testRollUpOnExternalDataSourceWithCompositeKey() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testRollUpOnExternalDataSourceWithCompositeKey(String contextName, Map<String, Object> context) throws IOException
   {
-    final File toRead = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/wikipedia-sampled.json");
+    final File toRead = getResourceAsTemporaryFile("/wikipedia-sampled.json");
     final String toReadFileNameAsJson = queryFramework().queryJsonMapper().writeValueAsString(toRead.getAbsolutePath());
 
     RowSignature rowSignature = RowSignature.builder()
@@ -1143,7 +1268,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .addExpectedAggregatorFactory(new LongSumAggregatorFactory("cnt", "cnt"))
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of(
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of(
                          "foo1",
                          Intervals.of("2016-06-27/P1D"),
                          "test",
@@ -1191,8 +1316,9 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testInsertWrongTypeTimestamp()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWrongTypeTimestamp(String contextName, Map<String, Object> context)
   {
     final RowSignature rowSignature =
         RowSignature.builder()
@@ -1215,13 +1341,14 @@ public class MSQInsertTest extends MSQTestBase
                 DruidException.Persona.USER,
                 DruidException.Category.INVALID_INPUT,
                 "invalidInput"
-            ).expectMessageIs("Field [__time] was the wrong type [VARCHAR], expected TIMESTAMP")
+            ).expectMessageIs("Field[__time] was the wrong type[VARCHAR], expected TIMESTAMP")
         )
         .verifyPlanningErrors();
   }
 
-  @Test
-  public void testIncorrectInsertQuery()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testIncorrectInsertQuery(String contextName, Map<String, Object> context)
   {
     testIngestQuery()
         .setSql(
@@ -1234,8 +1361,9 @@ public class MSQInsertTest extends MSQTestBase
   }
 
 
-  @Test
-  public void testInsertRestrictedColumns()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertRestrictedColumns(String contextName, Map<String, Object> context)
   {
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
@@ -1262,8 +1390,9 @@ public class MSQInsertTest extends MSQTestBase
         .verifyResults();
   }
 
-  @Test
-  public void testInsertDuplicateColumnNames()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertDuplicateColumnNames(String contextName, Map<String, Object> context)
   {
     testIngestQuery()
         .setSql(" insert into foo1 SELECT\n"
@@ -1284,8 +1413,9 @@ public class MSQInsertTest extends MSQTestBase
         .verifyPlanningErrors();
   }
 
-  @Test
-  public void testInsertQueryWithInvalidSubtaskCount()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertQueryWithInvalidSubtaskCount(String contextName, Map<String, Object> context)
   {
     Map<String, Object> localContext = new HashMap<>(context);
     localContext.put(MultiStageQueryContext.CTX_MAX_NUM_TASKS, 1);
@@ -1306,13 +1436,14 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyExecutionError();
   }
 
-  @Test
-  public void testInsertWithTooLargeRowShouldThrowException() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertWithTooLargeRowShouldThrowException(String contextName, Map<String, Object> context) throws IOException
   {
-    final File toRead = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/wikipedia-sampled.json");
+    final File toRead = getResourceAsTemporaryFile("/wikipedia-sampled.json");
     final String toReadFileNameAsJson = queryFramework().queryJsonMapper().writeValueAsString(toRead.getAbsolutePath());
 
-    Mockito.doReturn(500).when(workerMemoryParameters).getLargeFrameSize();
+    Mockito.doReturn(500).when(workerMemoryParameters).getFrameSize();
 
     testIngestQuery().setSql(" insert into foo1 SELECT\n"
                              + "  floor(TIME_PARSE(\"timestamp\") to day) AS __time,\n"
@@ -1336,7 +1467,75 @@ public class MSQInsertTest extends MSQTestBase
   }
 
   @Test
-  public void testInsertLimitWithPeriodGranularityThrowsException()
+  public void testInsertWithTooManySegmentsInTimeChunk()
+  {
+    final Map<String, Object> context = ImmutableMap.<String, Object>builder()
+                                                    .putAll(DEFAULT_MSQ_CONTEXT)
+                                                    .put("maxNumSegments", 1)
+                                                    .put("rowsPerSegment", 1)
+                                                    .build();
+
+    testIngestQuery().setSql("INSERT INTO foo"
+                             + " SELECT TIME_PARSE(ts) AS __time, c1 "
+                             + " FROM (VALUES('2023-01-01', 'day1_1'), ('2023-01-01', 'day1_2'), ('2023-02-01', 'day2')) AS t(ts, c1)"
+                             + " PARTITIONED BY DAY")
+                     .setExpectedDataSource("foo")
+                     .setExpectedRowSignature(RowSignature.builder().add("__time", ColumnType.LONG).build())
+                     .setQueryContext(context)
+                     .setExpectedMSQFault(
+                         new TooManySegmentsInTimeChunkFault(
+                             DateTimes.of("2023-01-01"),
+                             2,
+                             1,
+                             Granularities.DAY
+                         )
+                     )
+                     .verifyResults();
+
+  }
+
+  @Test
+  public void testInsertWithMaxNumSegments()
+  {
+    final Map<String, Object> context = ImmutableMap.<String, Object>builder()
+                                                    .putAll(DEFAULT_MSQ_CONTEXT)
+                                                    .put("maxNumSegments", 2)
+                                                    .put("rowsPerSegment", 1)
+                                                    .build();
+
+    final RowSignature expectedRowSignature = RowSignature.builder()
+                                                          .add("__time", ColumnType.LONG)
+                                                          .add("c1", ColumnType.STRING)
+                                                          .build();
+    // Ingest query should at most generate 2 segments per time chunk
+    // i.e. 2 segments for the first time chunk and 1 segment for the last time chunk.
+    testIngestQuery().setSql("INSERT INTO foo"
+                             + " SELECT TIME_PARSE(ts) AS __time, c1 "
+                             + " FROM (VALUES('2023-01-01', 'day1_1'), ('2023-01-01', 'day1_2'), ('2023-02-01', 'day2')) AS t(ts, c1)"
+                             + " PARTITIONED BY DAY")
+                     .setQueryContext(context)
+                     .setExpectedDataSource("foo")
+                     .setExpectedRowSignature(expectedRowSignature)
+                     .setExpectedSegments(
+                         ImmutableSet.of(
+                             SegmentId.of("foo", Intervals.of("2023-01-01/P1D"), "test", 0),
+                             SegmentId.of("foo", Intervals.of("2023-01-01/P1D"), "test", 1),
+                             SegmentId.of("foo", Intervals.of("2023-02-01/P1D"), "test", 0)
+                         )
+                     )
+                     .setExpectedResultRows(
+                         ImmutableList.of(
+                             new Object[]{1672531200000L, "day1_1"},
+                             new Object[]{1672531200000L, "day1_2"},
+                             new Object[]{1675209600000L, "day2"}
+                         )
+                     )
+                     .verifyResults();
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertLimitWithPeriodGranularityThrowsException(String contextName, Map<String, Object> context)
   {
     testIngestQuery().setSql(" INSERT INTO foo "
                              + "SELECT __time, m1 "
@@ -1352,14 +1551,15 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyPlanningErrors();
   }
 
-  @Test
-  public void testInsertOffsetThrowsException()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOffsetThrowsException(String contextName, Map<String, Object> context)
   {
     testIngestQuery().setSql(" INSERT INTO foo "
                              + "SELECT __time, m1 "
                              + "FROM foo "
                              + "LIMIT 50 "
-                             + "OFFSET 10"
+                             + "OFFSET 10 "
                              + "PARTITIONED BY ALL TIME")
                      .setExpectedValidationErrorMatcher(
                          invalidSqlContains("INSERT and REPLACE queries cannot have an OFFSET")
@@ -1368,20 +1568,92 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyPlanningErrors();
   }
 
-  @Test
-  public void testCorrectNumberOfWorkersUsedAutoModeWithoutBytesLimit() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithLimit(String contextName, Map<String, Object> context)
+  {
+    Map<String, Object> queryContext = ImmutableMap.<String, Object>builder()
+                                                   .putAll(context)
+                                                   .put(MultiStageQueryContext.CTX_ROWS_PER_SEGMENT, 2)
+                                                   .build();
+
+    List<Object[]> expectedRows = ImmutableList.of(
+        new Object[]{946771200000L, "10.1", 1L},
+        new Object[]{978307200000L, "1", 1L},
+        new Object[]{946857600000L, "2", 1L},
+        new Object[]{978480000000L, "abc", 1L}
+    );
+
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("dim1", ColumnType.STRING)
+                                            .add("cnt", ColumnType.LONG)
+                                            .build();
+
+    testIngestQuery().setSql(
+                         "insert into foo1 select __time, dim1, cnt from foo where dim1 != '' limit 4 partitioned by all clustered by dim1")
+                     .setExpectedDataSource("foo1")
+                     .setQueryContext(queryContext)
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0), SegmentId.of("foo1", Intervals.ETERNITY, "test", 1)))
+                     .setExpectedResultRows(expectedRows)
+                     .setExpectedMSQSegmentReport(
+                         new MSQSegmentReport(
+                             NumberedShardSpec.class.getSimpleName(),
+                             "Using NumberedShardSpec to generate segments since the query is inserting rows."
+                         )
+                     )
+                     .verifyResults();
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnRestricted(String contextName, Map<String, Object> context)
+  {
+    // Set expected results based on query's end user
+    boolean isSuperUser = context.get(MSQTaskQueryMaker.USER_KEY).equals(CalciteTests.TEST_SUPERUSER_NAME);
+    List<Object[]> expectedRows = isSuperUser ? ImmutableList.of(
+        new Object[]{978307200000L, 4.0f},
+        new Object[]{978393600000L, 5.0f},
+        new Object[]{978480000000L, 6.0f}
+    ) : ImmutableList.of(new Object[]{978480000000L, 6.0f});
+    // Set common expected results (not relevant to query's end user)
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("m1", ColumnType.FLOAT)
+                                            .build();
+
+    testIngestQuery().setSql(
+                         "insert into restrictedDatasource_m1_is_6 select __time, m1 from restrictedDatasource_m1_is_6 where __time >= TIMESTAMP '2001-01-01' partitioned by all")
+                     .setExpectedDataSource("restrictedDatasource_m1_is_6")
+                     .setQueryContext(new HashMap<>(context))
+                     .setExpectedRowSignature(rowSignature)
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("restrictedDatasource_m1_is_6", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedResultRows(expectedRows)
+                     .setExpectedMSQSegmentReport(
+                         new MSQSegmentReport(
+                             NumberedShardSpec.class.getSimpleName(),
+                             "Using NumberedShardSpec to generate segments since the query is inserting rows."
+                         )
+                     )
+                     .verifyResults();
+  }
+
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testCorrectNumberOfWorkersUsedAutoModeWithoutBytesLimit(String contextName, Map<String, Object> context) throws IOException
   {
     Map<String, Object> localContext = new HashMap<>(context);
     localContext.put(MultiStageQueryContext.CTX_TASK_ASSIGNMENT_STRATEGY, WorkerAssignmentStrategy.AUTO.name());
     localContext.put(MultiStageQueryContext.CTX_MAX_NUM_TASKS, 4);
 
-    final File toRead1 = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/multipleFiles/wikipedia-sampled-1.json");
+    final File toRead1 = getResourceAsTemporaryFile("/multipleFiles/wikipedia-sampled-1.json");
     final String toReadFileNameAsJson1 = queryFramework().queryJsonMapper().writeValueAsString(toRead1.getAbsolutePath());
 
-    final File toRead2 = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/multipleFiles/wikipedia-sampled-2.json");
+    final File toRead2 = getResourceAsTemporaryFile("/multipleFiles/wikipedia-sampled-2.json");
     final String toReadFileNameAsJson2 = queryFramework().queryJsonMapper().writeValueAsString(toRead2.getAbsolutePath());
 
-    final File toRead3 = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/multipleFiles/wikipedia-sampled-3.json");
+    final File toRead3 = getResourceAsTemporaryFile("/multipleFiles/wikipedia-sampled-3.json");
     final String toReadFileNameAsJson3 = queryFramework().queryJsonMapper().writeValueAsString(toRead3.getAbsolutePath());
 
     RowSignature rowSignature = RowSignature.builder()
@@ -1403,7 +1675,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(localContext)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of(
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of(
                          "foo1",
                          Intervals.of("2016-06-27/P1D"),
                          "test",
@@ -1418,21 +1690,22 @@ public class MSQInsertTest extends MSQTestBase
 
   }
 
-  @Test
-  public void testCorrectNumberOfWorkersUsedAutoModeWithBytesLimit() throws IOException
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testCorrectNumberOfWorkersUsedAutoModeWithBytesLimit(String contextName, Map<String, Object> context) throws IOException
   {
     Map<String, Object> localContext = new HashMap<>(context);
     localContext.put(MultiStageQueryContext.CTX_TASK_ASSIGNMENT_STRATEGY, WorkerAssignmentStrategy.AUTO.name());
     localContext.put(MultiStageQueryContext.CTX_MAX_NUM_TASKS, 4);
     localContext.put(MultiStageQueryContext.CTX_MAX_INPUT_BYTES_PER_WORKER, 10);
 
-    final File toRead1 = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/multipleFiles/wikipedia-sampled-1.json");
+    final File toRead1 = getResourceAsTemporaryFile("/multipleFiles/wikipedia-sampled-1.json");
     final String toReadFileNameAsJson1 = queryFramework().queryJsonMapper().writeValueAsString(toRead1.getAbsolutePath());
 
-    final File toRead2 = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/multipleFiles/wikipedia-sampled-2.json");
+    final File toRead2 = getResourceAsTemporaryFile("/multipleFiles/wikipedia-sampled-2.json");
     final String toReadFileNameAsJson2 = queryFramework().queryJsonMapper().writeValueAsString(toRead2.getAbsolutePath());
 
-    final File toRead3 = MSQTestFileUtils.getResourceAsTemporaryFile(temporaryFolder, this, "/multipleFiles/wikipedia-sampled-3.json");
+    final File toRead3 = getResourceAsTemporaryFile("/multipleFiles/wikipedia-sampled-3.json");
     final String toReadFileNameAsJson3 = queryFramework().queryJsonMapper().writeValueAsString(toRead3.getAbsolutePath());
 
     RowSignature rowSignature = RowSignature.builder()
@@ -1454,7 +1727,7 @@ public class MSQInsertTest extends MSQTestBase
                      .setExpectedDataSource("foo1")
                      .setQueryContext(localContext)
                      .setExpectedRowSignature(rowSignature)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of(
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of(
                          "foo1",
                          Intervals.of("2016-06-27/P1D"),
                          "test",
@@ -1468,9 +1741,11 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testEmptyInsertQuery()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testEmptyInsertQuery(String contextName, Map<String, Object> context)
   {
+
     // Insert with a condition which results in 0 rows being inserted -- do nothing.
     testIngestQuery().setSql(
                          "INSERT INTO foo1 "
@@ -1484,9 +1759,11 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testEmptyInsertQueryWithAllGranularity()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testEmptyInsertQueryWithAllGranularity(String contextName, Map<String, Object> context)
   {
+
     // Insert with a condition which results in 0 rows being inserted -- do nothing.
     testIngestQuery().setSql(
                          "INSERT INTO foo1 "
@@ -1500,9 +1777,11 @@ public class MSQInsertTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testEmptyInsertLimitQuery()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testEmptyInsertLimitQuery(String contextName, Map<String, Object> context)
   {
+
     // Insert with a condition which results in 0 rows being inserted -- do nothing.
     testIngestQuery().setSql(
                          "INSERT INTO foo1 "
@@ -1520,85 +1799,62 @@ public class MSQInsertTest extends MSQTestBase
 
   private List<Object[]> expectedFooRows()
   {
-    List<Object[]> expectedRows = new ArrayList<>();
-    if (!useDefault) {
-      expectedRows.add(new Object[]{946684800000L, "", 1L});
-    }
-    expectedRows.addAll(ImmutableList.of(
+    return Arrays.asList(
+        new Object[]{946684800000L, "", 1L},
         new Object[]{946771200000L, "10.1", 1L},
         new Object[]{946857600000L, "2", 1L},
         new Object[]{978307200000L, "1", 1L},
         new Object[]{978393600000L, "def", 1L},
         new Object[]{978480000000L, "abc", 1L}
-    ));
-    return expectedRows;
+    );
   }
 
   private List<Object[]> expectedFooRowsWithAggregatedComplexColumn()
   {
-    List<Object[]> expectedRows = new ArrayList<>();
     HyperLogLogCollector hyperLogLogCollector = HyperLogLogCollector.makeLatestCollector();
     hyperLogLogCollector.add(fn.hashInt(1).asBytes());
-    if (!useDefault) {
-      expectedRows.add(new Object[]{946684800000L, "", hyperLogLogCollector.estimateCardinalityRound()});
-    }
-    expectedRows.addAll(ImmutableList.of(
+    return ImmutableList.of(
+        new Object[]{946684800000L, "", hyperLogLogCollector.estimateCardinalityRound()},
         new Object[]{946771200000L, "10.1", hyperLogLogCollector.estimateCardinalityRound()},
         new Object[]{946857600000L, "2", hyperLogLogCollector.estimateCardinalityRound()},
         new Object[]{978307200000L, "1", hyperLogLogCollector.estimateCardinalityRound()},
         new Object[]{978393600000L, "def", hyperLogLogCollector.estimateCardinalityRound()},
         new Object[]{978480000000L, "abc", hyperLogLogCollector.estimateCardinalityRound()}
-    ));
-    return expectedRows;
+    );
   }
 
   private List<Object[]> expectedMultiValueFooRows()
   {
-    List<Object[]> expectedRows = new ArrayList<>();
-    if (!useDefault) {
-      expectedRows.add(new Object[]{0L, ""});
-    }
-
-    expectedRows.addAll(
-        ImmutableList.of(
-            new Object[]{0L, ImmutableList.of("a", "b")},
-            new Object[]{0L, ImmutableList.of("b", "c")},
-            new Object[]{0L, "d"}
-        ));
-    return expectedRows;
+    return ImmutableList.of(
+        new Object[]{0L, ""},
+        new Object[]{0L, ImmutableList.of("a", "b")},
+        new Object[]{0L, ImmutableList.of("b", "c")},
+        new Object[]{0L, "d"}
+    );
   }
 
   private List<Object[]> expectedMultiValueFooRowsGroupBy()
   {
-    List<Object[]> expectedRows = new ArrayList<>();
-    if (!useDefault) {
-      expectedRows.add(new Object[]{0L, ""});
-    }
-    expectedRows.addAll(ImmutableList.of(
+    return ImmutableList.of(
+        new Object[]{0L, ""},
         new Object[]{0L, "a"},
         new Object[]{0L, "b"},
         new Object[]{0L, "c"},
         new Object[]{0L, "d"}
-    ));
-    return expectedRows;
+    );
   }
 
   private Set<SegmentId> expectedFooSegments()
   {
-    Set<SegmentId> expectedSegments = new TreeSet<>();
-
-    if (!useDefault) {
-      expectedSegments.add(SegmentId.of("foo1", Intervals.of("2000-01-01T/P1D"), "test", 0));
-    }
-    expectedSegments.addAll(
+    return new TreeSet<>(
         ImmutableSet.of(
+            SegmentId.of("foo1", Intervals.of("2000-01-01T/P1D"), "test", 0),
             SegmentId.of("foo1", Intervals.of("2000-01-02T/P1D"), "test", 0),
             SegmentId.of("foo1", Intervals.of("2000-01-03T/P1D"), "test", 0),
             SegmentId.of("foo1", Intervals.of("2001-01-01T/P1D"), "test", 0),
             SegmentId.of("foo1", Intervals.of("2001-01-02T/P1D"), "test", 0),
             SegmentId.of("foo1", Intervals.of("2001-01-03T/P1D"), "test", 0)
-        ));
-
-    return expectedSegments;
+        )
+    );
   }
 }

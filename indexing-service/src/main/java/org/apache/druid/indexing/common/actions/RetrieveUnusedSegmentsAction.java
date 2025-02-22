@@ -20,7 +20,6 @@
 package org.apache.druid.indexing.common.actions;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.druid.indexing.common.task.Task;
@@ -34,28 +33,24 @@ import java.util.List;
 
 public class RetrieveUnusedSegmentsAction implements TaskAction<List<DataSegment>>
 {
-  @JsonIgnore
   private final String dataSource;
-
-  @JsonIgnore
   private final Interval interval;
-
-  @JsonIgnore
+  private final List<String> versions;
   private final Integer limit;
-
-  @JsonIgnore
   private final DateTime maxUsedStatusLastUpdatedTime;
 
   @JsonCreator
   public RetrieveUnusedSegmentsAction(
       @JsonProperty("dataSource") String dataSource,
       @JsonProperty("interval") Interval interval,
+      @JsonProperty("versions") @Nullable List<String> versions,
       @JsonProperty("limit") @Nullable Integer limit,
       @JsonProperty("maxUsedStatusLastUpdatedTime") @Nullable DateTime maxUsedStatusLastUpdatedTime
   )
   {
     this.dataSource = dataSource;
     this.interval = interval;
+    this.versions = versions;
     this.limit = limit;
     this.maxUsedStatusLastUpdatedTime = maxUsedStatusLastUpdatedTime;
   }
@@ -70,6 +65,13 @@ public class RetrieveUnusedSegmentsAction implements TaskAction<List<DataSegment
   public Interval getInterval()
   {
     return interval;
+  }
+
+  @Nullable
+  @JsonProperty
+  public List<String> getVersions()
+  {
+    return versions;
   }
 
   @Nullable
@@ -89,20 +91,14 @@ public class RetrieveUnusedSegmentsAction implements TaskAction<List<DataSegment
   @Override
   public TypeReference<List<DataSegment>> getReturnTypeReference()
   {
-    return new TypeReference<List<DataSegment>>() {};
+    return new TypeReference<>() {};
   }
 
   @Override
   public List<DataSegment> perform(Task task, TaskActionToolbox toolbox)
   {
     return toolbox.getIndexerMetadataStorageCoordinator()
-        .retrieveUnusedSegmentsForInterval(dataSource, interval, limit, maxUsedStatusLastUpdatedTime);
-  }
-
-  @Override
-  public boolean isAudited()
-  {
-    return false;
+        .retrieveUnusedSegmentsForInterval(dataSource, interval, versions, limit, maxUsedStatusLastUpdatedTime);
   }
 
   @Override
@@ -111,6 +107,7 @@ public class RetrieveUnusedSegmentsAction implements TaskAction<List<DataSegment
     return getClass().getSimpleName() + "{" +
            "dataSource='" + dataSource + '\'' +
            ", interval=" + interval +
+           ", versions=" + versions +
            ", limit=" + limit +
            ", maxUsedStatusLastUpdatedTime=" + maxUsedStatusLastUpdatedTime +
            '}';

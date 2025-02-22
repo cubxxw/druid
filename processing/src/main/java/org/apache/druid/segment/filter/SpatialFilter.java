@@ -35,14 +35,18 @@ import org.apache.druid.query.filter.DruidPredicateMatch;
 import org.apache.druid.query.filter.Filter;
 import org.apache.druid.query.filter.FilterTuning;
 import org.apache.druid.query.filter.ValueMatcher;
+import org.apache.druid.query.filter.vector.VectorValueMatcher;
+import org.apache.druid.query.filter.vector.VectorValueMatcherColumnProcessorFactory;
+import org.apache.druid.segment.ColumnInspector;
+import org.apache.druid.segment.ColumnProcessors;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.column.ColumnIndexCapabilities;
 import org.apache.druid.segment.column.ColumnIndexSupplier;
 import org.apache.druid.segment.column.SimpleColumnIndexCapabilities;
-import org.apache.druid.segment.incremental.SpatialDimensionRowTransformer;
 import org.apache.druid.segment.index.AllUnknownBitmapColumnIndex;
 import org.apache.druid.segment.index.BitmapColumnIndex;
 import org.apache.druid.segment.index.semantic.SpatialIndex;
+import org.apache.druid.segment.vector.VectorColumnSelectorFactory;
 
 import javax.annotation.Nullable;
 import java.util.Objects;
@@ -91,6 +95,12 @@ public class SpatialFilter implements Filter
       }
 
       @Override
+      public int estimatedComputeCost()
+      {
+        return Integer.MAX_VALUE;
+      }
+
+      @Override
       public <T> T computeBitmapResult(BitmapResultFactory<T> bitmapResultFactory, boolean includeUnknown)
       {
         Iterable<ImmutableBitmap> search = spatialIndex.getRTree().search(bound);
@@ -106,8 +116,23 @@ public class SpatialFilter implements Filter
         factory,
         dimension,
         new BoundDruidPredicateFactory(bound)
-
     );
+  }
+
+  @Override
+  public VectorValueMatcher makeVectorMatcher(VectorColumnSelectorFactory factory)
+  {
+    return ColumnProcessors.makeVectorProcessor(
+        dimension,
+        VectorValueMatcherColumnProcessorFactory.instance(),
+        factory
+    ).makeMatcher(new BoundDruidPredicateFactory(bound));
+  }
+
+  @Override
+  public boolean canVectorizeMatcher(ColumnInspector inspector)
+  {
+    return true;
   }
 
   @Override
@@ -154,8 +179,18 @@ public class SpatialFilter implements Filter
         if (input == null) {
           return DruidPredicateMatch.UNKNOWN;
         }
-        final float[] coordinate = SpatialDimensionRowTransformer.decode(input);
-        return DruidPredicateMatch.of(bound.contains(coordinate));
+        return DruidPredicateMatch.of(bound.containsObj(input));
+      };
+    }
+
+    @Override
+    public DruidObjectPredicate<Object> makeObjectPredicate()
+    {
+      return input -> {
+        if (input == null) {
+          return DruidPredicateMatch.UNKNOWN;
+        }
+        return DruidPredicateMatch.of(bound.containsObj(input));
       };
     }
 

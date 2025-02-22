@@ -24,7 +24,7 @@ title: "Lookups"
 
 Lookups are a concept in Apache Druid where dimension values are (optionally) replaced with new values, allowing join-like
 functionality. Applying lookups in Druid is similar to joining a dimension table in a data warehouse. See
-[dimension specs](../querying/dimensionspecs.md) for more information. For the purpose of these documents, a "key"
+[dimension specs](./dimensionspecs.md) for more information. For the purpose of these documents, a "key"
 refers to a dimension value to match, and a "value" refers to its replacement. So if you wanted to map
 `appid-12345` to `Super Mega Awesome App` then the key would be `appid-12345` and the value would be
 `Super Mega Awesome App`.
@@ -43,12 +43,16 @@ and such data belongs in the raw denormalized data for use in Druid.
 
 Lookups are generally preloaded in-memory on all servers. But very small lookups (on the order of a few dozen to a few
 hundred entries) can also be passed inline in native queries time using the "map" lookup type. Refer to the
-[dimension specs](dimensionspecs.md) documentation for details.
+[dimension specs](./dimensionspecs.md) documentation for details.
 
 Other lookup types are available as extensions, including:
 
-- Globally cached lookups from local files, remote URIs, or JDBC through [lookups-cached-global](../development/extensions-core/lookups-cached-global.md).
-- Globally cached lookups from a Kafka topic through [kafka-extraction-namespace](../development/extensions-core/kafka-extraction-namespace.md).
+- Globally cached lookups from local files, remote URIs, or JDBC through [lookups-cached-global](./lookups-cached-global.md).
+- Globally cached lookups from a Kafka topic through [kafka-extraction-namespace](./kafka-extraction-namespace.md).
+
+:::info
+[Multi-value dimensions](multi-value-dimensions.md) (MVDs) are not supported as keys in lookups. For example, to map the MVD `["A", "B", "C"]` to the value `x` in your lookup, flatten the MVD and map each element of the MVD to the value. Your lookup will have separate key-value pairs for each element of the MVD: `"A": "x"`, `"B": "x"`, and `"C": "x"`.
+:::
 
 Query Syntax
 ------------
@@ -206,14 +210,10 @@ Injective lookups are eligible for the largest set of query rewrites. Injective 
 - The lookup table must have a key-value pair defined for every input that the `LOOKUP` function call may
   encounter. For example, when calling `LOOKUP(sku, 'sku_to_name')`, the `sku_to_name` lookup table must have a key
   for all possible `sku`.
-- In SQL-compatible null handling mode (when `druid.generic.useDefaultValueForNull = false`, the default) injective
-  lookup tables are not required to have keys for `null`, since `LOOKUP` of `null` is always `null` itself.
-- When `druid.generic.useDefaultValueForNull = true`, a `LOOKUP` of `null` retrieves the value mapped to the
-  empty-string key (`""`). In this mode, injective lookup tables must have an empty-string key if the `LOOKUP`
-  function may encounter null input values.
+- Injective lookup tables are not required to have keys for `null`, since `LOOKUP` of `null` is always `null` itself.
 
 To determine whether a lookup is injective, Druid relies on an `injective` property that you can set in the
-[lookup definition](../development/extensions-core/lookups-cached-global.md). In general, you should set
+[lookup definition](./lookups-cached-global.md). In general, you should set
 `injective: true` for any lookup that satisfies the required properties, to allow Druid to run your queries as fast as
 possible.
 

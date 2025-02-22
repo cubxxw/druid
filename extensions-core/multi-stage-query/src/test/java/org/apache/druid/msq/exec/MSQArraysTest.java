@@ -25,6 +25,7 @@ import org.apache.druid.data.input.impl.InlineInputSource;
 import org.apache.druid.data.input.impl.JsonInputFormat;
 import org.apache.druid.data.input.impl.LocalInputSource;
 import org.apache.druid.data.input.impl.systemfield.SystemFields;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.msq.indexing.MSQSpec;
@@ -34,9 +35,9 @@ import org.apache.druid.msq.test.MSQTestBase;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.NestedDataTestUtils;
+import org.apache.druid.query.OrderBy;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.expression.TestExprMacroTable;
-import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
@@ -47,18 +48,16 @@ import org.apache.druid.sql.calcite.planner.ColumnMappings;
 import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.utils.CompressionUtils;
 import org.hamcrest.CoreMatchers;
-import org.junit.Before;
-import org.junit.Test;
 import org.junit.internal.matchers.ThrowableMessageMatcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -69,14 +68,12 @@ import java.util.Map;
 /**
  * Tests INSERT and SELECT behaviour of MSQ with arrays and MVDs
  */
-@RunWith(Parameterized.class)
 public class MSQArraysTest extends MSQTestBase
 {
   private String dataFileNameJsonString;
   private String dataFileSignatureJsonString;
   private DataSource dataFileExternalDataSource;
 
-  @Parameterized.Parameters(name = "{index}:with context {0}")
   public static Collection<Object[]> data()
   {
     Object[][] data = new Object[][]{
@@ -88,17 +85,11 @@ public class MSQArraysTest extends MSQTestBase
     return Arrays.asList(data);
   }
 
-  @Parameterized.Parameter(0)
-  public String contextName;
-
-  @Parameterized.Parameter(1)
-  public Map<String, Object> context;
-
-  @Before
+  @BeforeEach
   public void setup() throws IOException
   {
     // Read the file and make the name available to the tests
-    File dataFile = temporaryFolder.newFile();
+    File dataFile = newTempFile("dataFile");
     final InputStream resourceStream = NestedDataTestUtils.class.getClassLoader()
                                                                 .getResourceAsStream(NestedDataTestUtils.ARRAY_TYPES_DATA_FILE);
     final InputStream decompressing = CompressionUtils.decompress(
@@ -111,14 +102,14 @@ public class MSQArraysTest extends MSQTestBase
     dataFileNameJsonString = queryFramework().queryJsonMapper().writeValueAsString(dataFile);
 
     RowSignature dataFileSignature = RowSignature.builder()
-                                             .add("timestamp", ColumnType.STRING)
-                                             .add("arrayString", ColumnType.STRING_ARRAY)
-                                             .add("arrayStringNulls", ColumnType.STRING_ARRAY)
-                                             .add("arrayLong", ColumnType.LONG_ARRAY)
-                                             .add("arrayLongNulls", ColumnType.LONG_ARRAY)
-                                             .add("arrayDouble", ColumnType.DOUBLE_ARRAY)
-                                             .add("arrayDoubleNulls", ColumnType.DOUBLE_ARRAY)
-                                             .build();
+                                                 .add("timestamp", ColumnType.STRING)
+                                                 .add("arrayString", ColumnType.STRING_ARRAY)
+                                                 .add("arrayStringNulls", ColumnType.STRING_ARRAY)
+                                                 .add("arrayLong", ColumnType.LONG_ARRAY)
+                                                 .add("arrayLongNulls", ColumnType.LONG_ARRAY)
+                                                 .add("arrayDouble", ColumnType.DOUBLE_ARRAY)
+                                                 .add("arrayDoubleNulls", ColumnType.DOUBLE_ARRAY)
+                                                 .build();
     dataFileSignatureJsonString = queryFramework().queryJsonMapper().writeValueAsString(dataFileSignature);
 
     dataFileExternalDataSource = new ExternalDataSource(
@@ -129,55 +120,203 @@ public class MSQArraysTest extends MSQTestBase
   }
 
   /**
-   * Tests the behaviour of INSERT query when arrayIngestMode is set to none (default) and the user tries to ingest
+   * Tests the behaviour of INSERT query when arrayIngestMode is set to default and the user tries to ingest
    * string arrays
    */
-  @Test
-  public void testInsertStringArrayWithArrayIngestModeNone()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testReplaceMvdWithStringArray(String contextName, Map<String, Object> context)
   {
-
     final Map<String, Object> adjustedContext = new HashMap<>(context);
-    adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "none");
+    adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "array");
 
-    testIngestQuery().setSql(
-                         "INSERT INTO foo1 SELECT MV_TO_ARRAY(dim3) AS dim3 FROM foo GROUP BY 1 PARTITIONED BY ALL TIME")
-                     .setQueryContext(adjustedContext)
-                     .setExpectedExecutionErrorMatcher(CoreMatchers.allOf(
-                         CoreMatchers.instanceOf(ISE.class),
-                         ThrowableMessageMatcher.hasMessage(CoreMatchers.containsString(
-                             "String arrays can not be ingested when 'arrayIngestMode' is set to 'none'"))
-                     ))
-                     .verifyExecutionError();
+    testIngestQuery()
+        .setSql(
+            "REPLACE INTO foo OVERWRITE ALL\n"
+            + "SELECT MV_TO_ARRAY(dim3) AS dim3 FROM foo\n"
+            + "PARTITIONED BY ALL TIME"
+        )
+        .setQueryContext(adjustedContext)
+        .setExpectedExecutionErrorMatcher(CoreMatchers.allOf(
+            CoreMatchers.instanceOf(DruidException.class),
+            ThrowableMessageMatcher.hasMessage(CoreMatchers.startsWith(
+                "Cannot write into field[dim3] using type[VARCHAR ARRAY] and arrayIngestMode[array], "
+                + "since the existing type is[VARCHAR]"))
+        ))
+        .verifyExecutionError();
   }
 
+  /**
+   * Tests the behaviour of INSERT query when arrayIngestMode is set to default and the user tries to ingest
+   * string arrays
+   */
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testReplaceStringArrayWithMvdInArrayMode(String contextName, Map<String, Object> context)
+  {
+    final Map<String, Object> adjustedContext = new HashMap<>(context);
+    adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "array");
+
+    testIngestQuery()
+        .setSql(
+            "REPLACE INTO arrays OVERWRITE ALL\n"
+            + "SELECT ARRAY_TO_MV(arrayString) AS arrayString FROM arrays\n"
+            + "PARTITIONED BY ALL TIME"
+        )
+        .setQueryContext(adjustedContext)
+        .setExpectedExecutionErrorMatcher(CoreMatchers.allOf(
+            CoreMatchers.instanceOf(DruidException.class),
+            ThrowableMessageMatcher.hasMessage(CoreMatchers.startsWith(
+                "Cannot write into field[arrayString] using type[VARCHAR] and arrayIngestMode[array], since the "
+                + "existing type is[VARCHAR ARRAY]. Try adjusting your query to make this column an ARRAY instead "
+                + "of VARCHAR."))
+        ))
+        .verifyExecutionError();
+  }
 
   /**
-   * Tests the behaviour of INSERT query when arrayIngestMode is set to mvd (default) and the only array type to be
-   * ingested is string array
+   * Tests the behaviour of INSERT query when arrayIngestMode is set to default and the user tries to ingest
+   * string arrays
    */
-  @Test
-  public void testInsertOnFoo1WithMultiValueToArrayGroupByWithDefaultContext()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testReplaceStringArrayWithMvdInMvdMode(String contextName, Map<String, Object> context)
   {
+    final Map<String, Object> adjustedContext = new HashMap<>(context);
+    adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "mvd");
+
+    testIngestQuery()
+        .setSql(
+            "REPLACE INTO arrays OVERWRITE ALL\n"
+            + "SELECT ARRAY_TO_MV(arrayString) AS arrayString FROM arrays\n"
+            + "PARTITIONED BY ALL TIME"
+        )
+        .setQueryContext(adjustedContext)
+        .setExpectedExecutionErrorMatcher(CoreMatchers.allOf(
+            CoreMatchers.instanceOf(DruidException.class),
+            ThrowableMessageMatcher.hasMessage(CoreMatchers.startsWith(
+                "Cannot write into field[arrayString] using type[VARCHAR] and arrayIngestMode[mvd], since the "
+                + "existing type is[VARCHAR ARRAY]. Try setting arrayIngestMode to[array] and adjusting your query to "
+                + "make this column an ARRAY instead of VARCHAR."))
+        ))
+        .verifyExecutionError();
+  }
+
+  /**
+   * Tests the behaviour of INSERT query when arrayIngestMode is set to default and the user tries to ingest
+   * string arrays
+   */
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testReplaceMvdWithStringArraySkipValidation(String contextName, Map<String, Object> context)
+  {
+    final Map<String, Object> adjustedContext = new HashMap<>(context);
+    adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "array");
+    adjustedContext.put(MultiStageQueryContext.CTX_SKIP_TYPE_VERIFICATION, "dim3");
+
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("dim3", ColumnType.STRING_ARRAY)
+                                            .build();
+
+    testIngestQuery()
+        .setSql(
+            "REPLACE INTO foo OVERWRITE ALL\n"
+            + "SELECT MV_TO_ARRAY(dim3) AS dim3 FROM foo\n"
+            + "PARTITIONED BY ALL TIME"
+        )
+        .setQueryContext(adjustedContext)
+        .setExpectedDataSource("foo")
+        .setExpectedRowSignature(rowSignature)
+        .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo", Intervals.ETERNITY, "test", 0)))
+        .setExpectedResultRows(
+            ImmutableList.of(
+                new Object[]{0L, null},
+                new Object[]{0L, null},
+                new Object[]{0L, new Object[]{"a", "b"}},
+                new Object[]{0L, new Object[]{""}},
+                new Object[]{0L, new Object[]{"b", "c"}},
+                new Object[]{0L, new Object[]{"d"}}
+            )
+        )
+        .verifyResults();
+  }
+
+  /**
+   * Tests the behaviour of INSERT query when arrayIngestMode is set to default and the user tries to ingest
+   * string arrays
+   */
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testReplaceMvdWithMvd(String contextName, Map<String, Object> context)
+  {
+    final Map<String, Object> adjustedContext = new HashMap<>(context);
+    adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "array");
+
     RowSignature rowSignature = RowSignature.builder()
                                             .add("__time", ColumnType.LONG)
                                             .add("dim3", ColumnType.STRING)
                                             .build();
+
+    testIngestQuery()
+        .setSql(
+            "REPLACE INTO foo OVERWRITE ALL\n"
+            + "SELECT dim3 FROM foo\n"
+            + "PARTITIONED BY ALL TIME"
+        )
+        .setQueryContext(adjustedContext)
+        .setExpectedDataSource("foo")
+        .setExpectedRowSignature(rowSignature)
+        .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo", Intervals.ETERNITY, "test", 0)))
+        .setExpectedResultRows(
+            ImmutableList.of(
+                new Object[]{0L, null},
+                new Object[]{0L, null},
+                new Object[]{0L, ""},
+                new Object[]{0L, ImmutableList.of("a", "b")},
+                new Object[]{0L, ImmutableList.of("b", "c")},
+                new Object[]{0L, "d"}
+            )
+        )
+        .verifyResults();
+  }
+
+  /**
+   * Tests the behaviour of INSERT query when arrayIngestMode is set to array (default)
+   */
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertOnFoo1WithMultiValueToArrayGroupByWithDefaultContext(String contextName, Map<String, Object> context)
+  {
+    RowSignature rowSignature = RowSignature.builder()
+                                            .add("__time", ColumnType.LONG)
+                                            .add("dim3", ColumnType.STRING_ARRAY)
+                                            .build();
+
+    List<Object[]> expectedRows = ImmutableList.of(
+        new Object[]{0L, null},
+        new Object[]{0L, new Object[]{"a", "b"}},
+        new Object[]{0L, new Object[]{""}},
+        new Object[]{0L, new Object[]{"b", "c"}},
+        new Object[]{0L, new Object[]{"d"}}
+    );
 
     testIngestQuery().setSql(
                          "INSERT INTO foo1 SELECT MV_TO_ARRAY(dim3) AS dim3 FROM foo GROUP BY 1 PARTITIONED BY ALL TIME")
                      .setExpectedDataSource("foo1")
                      .setExpectedRowSignature(rowSignature)
                      .setQueryContext(context)
-                     .setExpectedSegment(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
-                     .setExpectedResultRows(expectedMultiValueFooRowsToArray())
+                     .setExpectedSegments(ImmutableSet.of(SegmentId.of("foo1", Intervals.ETERNITY, "test", 0)))
+                     .setExpectedResultRows(expectedRows)
                      .verifyResults();
   }
 
   /**
    * Tests the INSERT query when 'auto' type is set
    */
-  @Test
-  public void testInsertArraysAutoType()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertArraysAutoType(String contextName, Map<String, Object> context)
   {
     List<Object[]> expectedRows = Arrays.asList(
         new Object[]{1672531200000L, null, null, null},
@@ -229,8 +368,9 @@ public class MSQArraysTest extends MSQTestBase
    * Tests the behaviour of INSERT query when arrayIngestMode is set to mvd and the user tries to ingest numeric array
    * types as well
    */
-  @Test
-  public void testInsertArraysWithStringArraysAsMVDs()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertArraysWithStringArraysAsMVDs(String contextName, Map<String, Object> context)
   {
     final Map<String, Object> adjustedContext = new HashMap<>(context);
     adjustedContext.put(MultiStageQueryContext.CTX_ARRAY_INGEST_MODE, "mvd");
@@ -263,8 +403,9 @@ public class MSQArraysTest extends MSQTestBase
    * Tests the behaviour of INSERT query when arrayIngestMode is set to array and the user tries to ingest all
    * array types
    */
-  @Test
-  public void testInsertArraysAsArrays()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testInsertArraysAsArrays(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = Arrays.asList(
         new Object[]{
@@ -435,27 +576,23 @@ public class MSQArraysTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testSelectOnArraysWithArrayIngestModeAsNone()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testSelectOnArraysWithArrayIngestModeAsMVD(String contextName, Map<String, Object> context)
   {
-    testSelectOnArrays("none");
+    testSelectOnArrays(contextName, context, "mvd");
   }
 
-  @Test
-  public void testSelectOnArraysWithArrayIngestModeAsMVD()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testSelectOnArraysWithArrayIngestModeAsArray(String contextName, Map<String, Object> context)
   {
-    testSelectOnArrays("mvd");
-  }
-
-  @Test
-  public void testSelectOnArraysWithArrayIngestModeAsArray()
-  {
-    testSelectOnArrays("array");
+    testSelectOnArrays(contextName, context, "array");
   }
 
   // Tests the behaviour of the select with the given arrayIngestMode. The expectation should be the same, since the
   // arrayIngestMode should only determine how the array gets ingested at the end.
-  public void testSelectOnArrays(String arrayIngestMode)
+  public void testSelectOnArrays(String contextName, Map<String, Object> context, String arrayIngestMode)
   {
     final List<Object[]> expectedRows = Arrays.asList(
         new Object[]{
@@ -475,7 +612,7 @@ public class MSQArraysTest extends MSQTestBase
             null,
             Arrays.asList(3.3d, 4.4d, 5.5d),
             Arrays.asList(999.0d, null, 5.5d),
-        },
+            },
         new Object[]{
             1672531200000L,
             Arrays.asList("b", "c"),
@@ -583,7 +720,7 @@ public class MSQArraysTest extends MSQTestBase
             Arrays.asList(2L, 3L),
             null,
             Arrays.asList(null, 1.1d),
-        }
+            }
     );
 
     RowSignature rowSignatureWithoutTimeColumn =
@@ -602,13 +739,13 @@ public class MSQArraysTest extends MSQTestBase
                                             .build();
 
     RowSignature scanSignature = RowSignature.builder()
-                                             .add("arrayDouble", ColumnType.DOUBLE_ARRAY)
-                                             .add("arrayDoubleNulls", ColumnType.DOUBLE_ARRAY)
-                                             .add("arrayLong", ColumnType.LONG_ARRAY)
-                                             .add("arrayLongNulls", ColumnType.LONG_ARRAY)
+                                             .add("v0", ColumnType.LONG)
                                              .add("arrayString", ColumnType.STRING_ARRAY)
                                              .add("arrayStringNulls", ColumnType.STRING_ARRAY)
-                                             .add("v0", ColumnType.LONG)
+                                             .add("arrayLong", ColumnType.LONG_ARRAY)
+                                             .add("arrayLongNulls", ColumnType.LONG_ARRAY)
+                                             .add("arrayDouble", ColumnType.DOUBLE_ARRAY)
+                                             .add("arrayDoubleNulls", ColumnType.DOUBLE_ARRAY)
                                              .build();
 
     final Map<String, Object> adjustedContext = new HashMap<>(context);
@@ -617,15 +754,8 @@ public class MSQArraysTest extends MSQTestBase
     Query<?> expectedQuery = newScanQueryBuilder()
         .dataSource(dataFileExternalDataSource)
         .intervals(querySegmentSpec(Filtration.eternity()))
-        .columns(
-            "arrayDouble",
-            "arrayDoubleNulls",
-            "arrayLong",
-            "arrayLongNulls",
-            "arrayString",
-            "arrayStringNulls",
-            "v0"
-        )
+        .columns(scanSignature.getColumnNames())
+        .columnTypes(scanSignature.getColumnTypes())
         .virtualColumns(new ExpressionVirtualColumn(
             "v0",
             "timestamp_parse(\"timestamp\",null,'UTC')",
@@ -672,8 +802,9 @@ public class MSQArraysTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testScanWithOrderByOnStringArray()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testScanWithOrderByOnStringArray(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = Arrays.asList(
         new Object[]{Arrays.asList("d", "e")},
@@ -705,7 +836,8 @@ public class MSQArraysTest extends MSQTestBase
         .dataSource(dataFileExternalDataSource)
         .intervals(querySegmentSpec(Filtration.eternity()))
         .columns("arrayString")
-        .orderBy(Collections.singletonList(new ScanQuery.OrderBy("arrayString", ScanQuery.Order.DESCENDING)))
+        .columnTypes(scanSignature.getColumnTypes())
+        .orderBy(Collections.singletonList(OrderBy.descending("arrayString")))
         .context(defaultScanQueryContext(context, scanSignature))
         .build();
 
@@ -735,8 +867,9 @@ public class MSQArraysTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testScanWithOrderByOnLongArray()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testScanWithOrderByOnLongArray(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = Arrays.asList(
         new Object[]{null},
@@ -767,7 +900,8 @@ public class MSQArraysTest extends MSQTestBase
         .dataSource(dataFileExternalDataSource)
         .intervals(querySegmentSpec(Filtration.eternity()))
         .columns("arrayLong")
-        .orderBy(Collections.singletonList(new ScanQuery.OrderBy("arrayLong", ScanQuery.Order.ASCENDING)))
+        .columnTypes(scanSignature.getColumnTypes())
+        .orderBy(Collections.singletonList(OrderBy.ascending("arrayLong")))
         .context(defaultScanQueryContext(context, scanSignature))
         .build();
 
@@ -797,8 +931,9 @@ public class MSQArraysTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testScanWithOrderByOnDoubleArray()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testScanWithOrderByOnDoubleArray(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = Arrays.asList(
         new Object[]{null},
@@ -829,7 +964,8 @@ public class MSQArraysTest extends MSQTestBase
         .dataSource(dataFileExternalDataSource)
         .intervals(querySegmentSpec(Filtration.eternity()))
         .columns("arrayDouble")
-        .orderBy(Collections.singletonList(new ScanQuery.OrderBy("arrayDouble", ScanQuery.Order.ASCENDING)))
+        .columnTypes(scanSignature.getColumnTypes())
+        .orderBy(Collections.singletonList(OrderBy.ascending("arrayDouble")))
         .context(defaultScanQueryContext(context, scanSignature))
         .build();
 
@@ -859,8 +995,9 @@ public class MSQArraysTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testScanExternBooleanArray()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testScanExternBooleanArray(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = Collections.singletonList(
         new Object[]{Arrays.asList(1L, 0L, null)}
@@ -880,6 +1017,7 @@ public class MSQArraysTest extends MSQTestBase
         )
         .intervals(querySegmentSpec(Filtration.eternity()))
         .columns("a_bool")
+        .columnTypes(scanSignature.getColumnTypes())
         .context(defaultScanQueryContext(context, scanSignature))
         .build();
 
@@ -906,8 +1044,9 @@ public class MSQArraysTest extends MSQTestBase
                      .verifyResults();
   }
 
-  @Test
-  public void testScanExternArrayWithNonConvertibleType()
+  @MethodSource("data")
+  @ParameterizedTest(name = "{index}:with context {0}")
+  public void testScanExternArrayWithNonConvertibleType(String contextName, Map<String, Object> context)
   {
     final List<Object[]> expectedRows = Collections.singletonList(
         new Object[]{Arrays.asList(null, null)}
@@ -927,6 +1066,7 @@ public class MSQArraysTest extends MSQTestBase
         )
         .intervals(querySegmentSpec(Filtration.eternity()))
         .columns("a_bool")
+        .columnTypes(scanSignature.getColumnTypes())
         .context(defaultScanQueryContext(context, scanSignature))
         .build();
 
@@ -951,21 +1091,5 @@ public class MSQArraysTest extends MSQTestBase
                      .setExpectedRowSignature(scanSignature)
                      .setExpectedResultRows(expectedRows)
                      .verifyResults();
-  }
-
-  private List<Object[]> expectedMultiValueFooRowsToArray()
-  {
-    List<Object[]> expectedRows = new ArrayList<>();
-    expectedRows.add(new Object[]{0L, null});
-    if (!useDefault) {
-      expectedRows.add(new Object[]{0L, ""});
-    }
-
-    expectedRows.addAll(ImmutableList.of(
-        new Object[]{0L, ImmutableList.of("a", "b")},
-        new Object[]{0L, ImmutableList.of("b", "c")},
-        new Object[]{0L, "d"}
-    ));
-    return expectedRows;
   }
 }

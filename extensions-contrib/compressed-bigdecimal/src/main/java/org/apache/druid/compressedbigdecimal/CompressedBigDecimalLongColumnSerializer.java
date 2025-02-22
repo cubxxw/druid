@@ -25,6 +25,7 @@ import org.apache.druid.segment.GenericColumnSerializer;
 import org.apache.druid.segment.data.ArrayBasedIndexedInts;
 import org.apache.druid.segment.data.CompressedVSizeColumnarIntsSerializer;
 import org.apache.druid.segment.data.CompressionStrategy;
+import org.apache.druid.segment.data.GenericIndexedWriter;
 import org.apache.druid.segment.data.V3CompressedVSizeColumnarMultiIntsSerializer;
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 
@@ -49,7 +50,8 @@ public class CompressedBigDecimalLongColumnSerializer implements GenericColumnSe
    */
   public static CompressedBigDecimalLongColumnSerializer create(
       SegmentWriteOutMedium segmentWriteOutMedium,
-      String filenameBase)
+      String filenameBase
+  )
   {
     return new CompressedBigDecimalLongColumnSerializer(
         CompressedVSizeColumnarIntsSerializer.create(
@@ -57,13 +59,18 @@ public class CompressedBigDecimalLongColumnSerializer implements GenericColumnSe
             segmentWriteOutMedium,
             String.format(Locale.ROOT, "%s.scale", filenameBase),
             16,
-            CompressionStrategy.LZ4),
+            CompressionStrategy.LZ4,
+            segmentWriteOutMedium.getCloser()
+        ),
         V3CompressedVSizeColumnarMultiIntsSerializer.create(
             "dummy",
             segmentWriteOutMedium,
             String.format(Locale.ROOT, "%s.magnitude", filenameBase),
             Integer.MAX_VALUE,
-            CompressionStrategy.LZ4));
+            CompressionStrategy.LZ4,
+            GenericIndexedWriter.MAX_FILE_SIZE
+        )
+    );
   }
 
   private final CompressedVSizeColumnarIntsSerializer scaleWriter;

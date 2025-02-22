@@ -28,10 +28,8 @@ import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.DateString;
 import org.apache.calcite.util.TimeString;
 import org.apache.calcite.util.TimestampString;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.error.DruidExceptionMatcher;
 import org.apache.druid.java.util.common.DateTimes;
-import org.apache.druid.math.expr.ExpressionProcessing;
 import org.apache.druid.sql.calcite.planner.DruidTypeSystem;
 import org.apache.druid.sql.calcite.planner.PlannerContext;
 import org.apache.druid.testing.InitializedNullHandlingTest;
@@ -41,7 +39,6 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.experimental.runners.Enclosed;
 import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -50,7 +47,6 @@ import org.mockito.Mockito;
 
 import java.math.BigDecimal;
 
-@RunWith(Enclosed.class)
 public class DruidLogicalValuesRuleTest
 {
   private static final PlannerContext DEFAULT_CONTEXT = Mockito.mock(PlannerContext.class);
@@ -146,14 +142,8 @@ public class DruidLogicalValuesRuleTest
     {
       RexLiteral literal = REX_BUILDER.makeLiteral(null, REX_BUILDER.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN));
 
-      if (NullHandling.sqlCompatible() && ExpressionProcessing.useStrictBooleans()) {
-        final Object fromLiteral = DruidLogicalValuesRule.getValueFromLiteral(literal, DEFAULT_CONTEXT);
-        Assert.assertNull(fromLiteral);
-      } else {
-        final Object fromLiteralNonStrict = DruidLogicalValuesRule.getValueFromLiteral(literal, DEFAULT_CONTEXT);
-        Assert.assertSame(Long.class, fromLiteralNonStrict.getClass());
-        Assert.assertEquals(0L, fromLiteralNonStrict);
-      }
+      final Object fromLiteral = DruidLogicalValuesRule.getValueFromLiteral(literal, DEFAULT_CONTEXT);
+      Assert.assertNull(fromLiteral);
     }
 
     @Test

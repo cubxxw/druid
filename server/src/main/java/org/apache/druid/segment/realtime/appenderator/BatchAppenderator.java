@@ -42,7 +42,6 @@ import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.RE;
-import org.apache.druid.java.util.common.RetryUtils;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.java.util.common.io.Closer;
@@ -51,20 +50,26 @@ import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryRunner;
 import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.segment.BaseProgressIndicator;
+import org.apache.druid.segment.DataSegmentWithMetadata;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.IndexMerger;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.QueryableIndexSegment;
 import org.apache.druid.segment.ReferenceCountingSegment;
+import org.apache.druid.segment.SchemaPayload;
+import org.apache.druid.segment.SchemaPayloadPlus;
+import org.apache.druid.segment.SegmentSchemaMapping;
 import org.apache.druid.segment.incremental.IncrementalIndexAddResult;
 import org.apache.druid.segment.incremental.IndexSizeExceededException;
 import org.apache.druid.segment.incremental.ParseExceptionHandler;
 import org.apache.druid.segment.incremental.RowIngestionMeters;
 import org.apache.druid.segment.indexing.DataSchema;
 import org.apache.druid.segment.loading.DataSegmentPusher;
-import org.apache.druid.segment.realtime.FireDepartmentMetrics;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
+import org.apache.druid.segment.metadata.FingerprintGenerator;
 import org.apache.druid.segment.realtime.FireHydrant;
-import org.apache.druid.segment.realtime.plumber.Sink;
+import org.apache.druid.segment.realtime.SegmentGenerationMetrics;
+import org.apache.druid.segment.realtime.sink.Sink;
 import org.apache.druid.timeline.DataSegment;
 import org.joda.time.Interval;
 
@@ -108,7 +113,7 @@ public class BatchAppenderator implements Appenderator
   private final String myId;
   private final DataSchema schema;
   private final AppenderatorConfig tuningConfig;
-  private final FireDepartmentMetrics metrics;
+  private final SegmentGenerationMetrics metrics;
   private final DataSegmentPusher dataSegmentPusher;
   private final ObjectMapper objectMapper;
   private final IndexIO indexIO;
@@ -151,18 +156,23 @@ public class BatchAppenderator implements Appenderator
   private volatile FileLock basePersistDirLock = null;
   private volatile FileChannel basePersistDirLockChannel = null;
 
+  private final CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig;
+
+  private final FingerprintGenerator fingerprintGenerator;
+
   BatchAppenderator(
       String id,
       DataSchema schema,
       AppenderatorConfig tuningConfig,
-      FireDepartmentMetrics metrics,
+      SegmentGenerationMetrics metrics,
       DataSegmentPusher dataSegmentPusher,
       ObjectMapper objectMapper,
       IndexIO indexIO,
       IndexMerger indexMerger,
       RowIngestionMeters rowIngestionMeters,
       ParseExceptionHandler parseExceptionHandler,
-      boolean useMaxMemoryEstimates
+      boolean useMaxMemoryEstimates,
+      CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig
   )
   {
     this.myId = id;
@@ -180,6 +190,8 @@ public class BatchAppenderator implements Appenderator
     skipBytesInMemoryOverheadCheck = tuningConfig.isSkipBytesInMemoryOverheadCheck();
     maxPendingPersists = tuningConfig.getMaxPendingPersists();
     this.useMaxMemoryEstimates = useMaxMemoryEstimates;
+    this.centralizedDatasourceSchemaConfig = centralizedDatasourceSchemaConfig;
+    this.fingerprintGenerator = new FingerprintGenerator(objectMapper);
   }
 
   @Override
@@ -224,7 +236,7 @@ public class BatchAppenderator implements Appenderator
     }
 
     if (pushExecutor == null) {
-      // use a blocking single threaded executor to throttle the firehose when write to disk is slow
+      // use a blocking single threaded executor to throttle the input source when write to disk is slow
       pushExecutor = MoreExecutors.listeningDecorator(
           Execs.newBlockingSingleThreaded(
               "[" + StringUtils.encodeForFormat(myId) + "]-batch-appenderator-push",
@@ -385,7 +397,7 @@ public class BatchAppenderator implements Appenderator
 
       Futures.addCallback(
           persistAll(null),
-          new FutureCallback<Object>()
+          new FutureCallback<>()
           {
             @Override
             public void onSuccess(@Nullable Object result)
@@ -469,8 +481,7 @@ public class BatchAppenderator implements Appenderator
           tuningConfig.getAppendableIndexSpec(),
           tuningConfig.getMaxRowsInMemory(),
           maxBytesTuningConfig,
-          useMaxMemoryEstimates,
-          null
+          useMaxMemoryEstimates
       );
       bytesCurrentlyInMemory += calculateSinkMemoryInUsed();
       sinks.put(identifier, retVal);
@@ -664,7 +675,6 @@ public class BatchAppenderator implements Appenderator
       final boolean useUniquePath
   )
   {
-
     if (committer != null) {
       throw new ISE("There should be no committer for batch ingestion");
     }
@@ -674,6 +684,7 @@ public class BatchAppenderator implements Appenderator
     }
 
     final List<DataSegment> dataSegments = new ArrayList<>();
+    final SegmentSchemaMapping segmentSchemaMapping = new SegmentSchemaMapping(CentralizedDatasourceSchemaConfig.SCHEMA_VERSION);
 
     return Futures.transform(
         persistAll(null), // make sure persists is done before push...
@@ -703,14 +714,28 @@ public class BatchAppenderator implements Appenderator
             }
 
             // push it:
-            final DataSegment dataSegment = mergeAndPush(
+            final DataSegmentWithMetadata dataSegmentWithMetadata = mergeAndPush(
                 identifier,
                 sinkForIdentifier
             );
 
             // record it:
-            if (dataSegment != null) {
-              dataSegments.add(dataSegment);
+            if (dataSegmentWithMetadata.getDataSegment() != null) {
+              DataSegment segment = dataSegmentWithMetadata.getDataSegment();
+              dataSegments.add(segment);
+              SchemaPayloadPlus schemaPayloadPlus = dataSegmentWithMetadata.getSegmentSchemaMetadata();
+              if (schemaPayloadPlus != null) {
+                SchemaPayload schemaPayload = schemaPayloadPlus.getSchemaPayload();
+                segmentSchemaMapping.addSchema(
+                    segment.getId(),
+                    schemaPayloadPlus,
+                    fingerprintGenerator.generateFingerprint(
+                        schemaPayload,
+                        segment.getDataSource(),
+                        CentralizedDatasourceSchemaConfig.SCHEMA_VERSION
+                    )
+                );
+              }
             } else {
               log.warn("mergeAndPush[%s] returned null, skipping.", identifier);
             }
@@ -718,7 +743,7 @@ public class BatchAppenderator implements Appenderator
           log.info("Push done: total sinks merged[%d], total hydrants merged[%d]",
                    identifiers.size(), totalHydrantsMerged
           );
-          return new SegmentsAndCommitMetadata(dataSegments, commitMetadata);
+          return new SegmentsAndCommitMetadata(dataSegments, commitMetadata, segmentSchemaMapping);
         },
         pushExecutor // push it in the background, pushAndClear in BaseAppenderatorDriver guarantees
         // that segments are dropped before next add row
@@ -730,10 +755,9 @@ public class BatchAppenderator implements Appenderator
    *
    * @param identifier    sink identifier
    * @param sink          sink to push
-   * @return segment descriptor, or null if the sink is no longer valid
+   * @return segment descriptor along with schema, or null if the sink is no longer valid
    */
-  @Nullable
-  private DataSegment mergeAndPush(
+  private DataSegmentWithMetadata mergeAndPush(
       final SegmentIdWithShardSpec identifier,
       final Sink sink
   )
@@ -768,7 +792,13 @@ public class BatchAppenderator implements Appenderator
       if (descriptorFile.exists()) {
         // Already pushed.
         log.info("Segment[%s] already pushed, skipping.", identifier);
-        return objectMapper.readValue(descriptorFile, DataSegment.class);
+        return new DataSegmentWithMetadata(
+            objectMapper.readValue(descriptorFile, DataSegment.class),
+            centralizedDatasourceSchemaConfig.isEnabled() ? TaskSegmentSchemaUtil.getSegmentSchema(
+                mergedTarget,
+                indexIO
+            ) : null
+        );
       }
 
       removeDirectory(mergedTarget);
@@ -786,7 +816,7 @@ public class BatchAppenderator implements Appenderator
       try {
         for (FireHydrant fireHydrant : sink) {
           Pair<ReferenceCountingSegment, Closeable> segmentAndCloseable = fireHydrant.getAndIncrementSegment();
-          final QueryableIndex queryableIndex = segmentAndCloseable.lhs.asQueryableIndex();
+          final QueryableIndex queryableIndex = segmentAndCloseable.lhs.as(QueryableIndex.class);
           if (queryableIndex != null) {
             rowsinMergedSegment += queryableIndex.getNumRows();
           }
@@ -820,20 +850,17 @@ public class BatchAppenderator implements Appenderator
         closer.close();
       }
 
-      // Retry pushing segments because uploading to deep storage might fail especially for cloud storage types
-      final DataSegment segment = RetryUtils.retry(
-          // This appenderator is used only for the local indexing task so unique paths are not required
-          () -> dataSegmentPusher.push(
-              mergedFile,
-              sink.getSegment()
-                  .withDimensions(IndexMerger.getMergedDimensionsFromQueryableIndexes(
+      // dataSegmentPusher retries internally when appropriate; no need for retries here.
+      final DataSegment segment = dataSegmentPusher.push(
+          mergedFile,
+          sink.getSegment()
+              .withDimensions(
+                  IndexMerger.getMergedDimensionsFromQueryableIndexes(
                       indexes,
                       schema.getDimensionsSpec()
-                  )),
-              false
-          ),
-          exception -> exception instanceof Exception,
-          5
+                  )
+              ),
+          false
       );
 
       // Drop the queryable indexes behind the hydrants... they are not needed anymore and their
@@ -842,6 +869,11 @@ public class BatchAppenderator implements Appenderator
       for (FireHydrant fireHydrant : sink) {
         fireHydrant.swapSegment(null);
       }
+
+      SchemaPayloadPlus schemaMetadata =
+          centralizedDatasourceSchemaConfig.isEnabled()
+          ? TaskSegmentSchemaUtil.getSegmentSchema(mergedTarget, indexIO)
+          : null;
 
       // cleanup, sink no longer needed
       removeDirectory(computePersistDir(identifier));
@@ -862,7 +894,7 @@ public class BatchAppenderator implements Appenderator
           objectMapper.writeValueAsString(segment.getLoadSpec())
       );
 
-      return segment;
+      return new DataSegmentWithMetadata(segment, schemaMetadata);
     }
     catch (Exception e) {
       metrics.incrementFailedHandoffs();
@@ -1042,7 +1074,6 @@ public class BatchAppenderator implements Appenderator
         tuningConfig.getMaxRowsInMemory(),
         maxBytesTuningConfig,
         useMaxMemoryEstimates,
-        null,
         hydrants
     );
     retVal.finishWriting(); // this sink is not writable
@@ -1141,7 +1172,7 @@ public class BatchAppenderator implements Appenderator
 
     try {
       final long startTime = System.nanoTime();
-      int numRows = indexToPersist.getIndex().size();
+      int numRows = indexToPersist.getIndex().numRows();
 
       // since the sink may have been persisted before it may have lost its
       // hydrant count, we remember that value in the sinks' metadata, so we have

@@ -24,7 +24,6 @@ import org.apache.druid.collections.bitmap.BitmapFactory;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
 import org.apache.druid.collections.bitmap.MutableBitmap;
 import org.apache.druid.collections.bitmap.RoaringBitmapFactory;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.query.filter.BoundDimFilter;
 import org.apache.druid.query.filter.ColumnIndexSelector;
@@ -49,7 +48,6 @@ import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
-import org.openjdk.jmh.infra.Blackhole;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -62,10 +60,6 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 10)
 public class LikeFilterBenchmark
 {
-  static {
-    NullHandling.initializeForTests();
-  }
-
   private static final int START_INT = 1_000_000;
   private static final int END_INT = 9_999_999;
 
@@ -103,6 +97,58 @@ public class LikeFilterBenchmark
       "foo",
       "50%",
       null,
+      null
+  ).toFilter();
+
+  private static final Filter REGEX_SUFFIX = new RegexDimFilter(
+      "foo",
+      ".*50$",
+      null
+  ).toFilter();
+
+  private static final Filter LIKE_SUFFIX = new LikeDimFilter(
+      "foo",
+      "%50",
+      null,
+      null
+  ).toFilter();
+
+  private static final Filter LIKE_CONTAINS = new LikeDimFilter(
+      "foo",
+      "%50%",
+      null,
+      null
+  ).toFilter();
+
+  private static final Filter REGEX_CONTAINS = new RegexDimFilter(
+      "foo",
+      ".*50.*",
+      null
+  ).toFilter();
+
+  private static final Filter LIKE_COMPLEX_CONTAINS = new LikeDimFilter(
+      "foo",
+      "%5_0%0_5%",
+      null,
+      null
+  ).toFilter();
+
+  private static final Filter REGEX_COMPLEX_CONTAINS = new RegexDimFilter(
+      "foo",
+      "%5_0%0_5",
+      null
+  ).toFilter();
+
+  private static final Filter LIKE_KILLER = new LikeDimFilter(
+      "foo",
+      "%%%%x",
+      null,
+      null
+  ).toFilter();
+
+  private static final Filter REGEX_KILLER = new RegexDimFilter(
+      "foo",
+      ".*.*.*.*x",
       null
   ).toFilter();
 
@@ -147,46 +193,105 @@ public class LikeFilterBenchmark
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
-  public void matchLikeEquals(Blackhole blackhole)
+  public ImmutableBitmap matchLikeEquals()
   {
-    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(LIKE_EQUALS, selector);
-    blackhole.consume(bitmapIndex);
+    return Filters.computeDefaultBitmapResults(LIKE_EQUALS, selector);
   }
 
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
-  public void matchSelectorEquals(Blackhole blackhole)
+  public ImmutableBitmap matchSelectorEquals()
   {
-    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(SELECTOR_EQUALS, selector);
-    blackhole.consume(bitmapIndex);
+    return Filters.computeDefaultBitmapResults(SELECTOR_EQUALS, selector);
   }
 
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
-  public void matchLikePrefix(Blackhole blackhole)
+  public ImmutableBitmap matchLikePrefix()
   {
-    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(LIKE_PREFIX, selector);
-    blackhole.consume(bitmapIndex);
+    return Filters.computeDefaultBitmapResults(LIKE_PREFIX, selector);
   }
 
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
-  public void matchBoundPrefix(Blackhole blackhole)
+  public ImmutableBitmap matchBoundPrefix()
   {
-    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(BOUND_PREFIX, selector);
-    blackhole.consume(bitmapIndex);
+    return Filters.computeDefaultBitmapResults(BOUND_PREFIX, selector);
   }
 
   @Benchmark
   @BenchmarkMode(Mode.AverageTime)
   @OutputTimeUnit(TimeUnit.MICROSECONDS)
-  public void matchRegexPrefix(Blackhole blackhole)
+  public ImmutableBitmap matchRegexPrefix()
   {
-    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(REGEX_PREFIX, selector);
-    blackhole.consume(bitmapIndex);
+    return Filters.computeDefaultBitmapResults(REGEX_PREFIX, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchLikeSuffix()
+  {
+    return Filters.computeDefaultBitmapResults(LIKE_SUFFIX, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchRegexSuffix()
+  {
+    return Filters.computeDefaultBitmapResults(REGEX_SUFFIX, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchLikeContains()
+  {
+    return Filters.computeDefaultBitmapResults(LIKE_CONTAINS, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchRegexContains()
+  {
+    return Filters.computeDefaultBitmapResults(REGEX_CONTAINS, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchLikeComplexContains()
+  {
+    return Filters.computeDefaultBitmapResults(LIKE_COMPLEX_CONTAINS, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchRegexComplexContains()
+  {
+    return Filters.computeDefaultBitmapResults(REGEX_COMPLEX_CONTAINS, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchLikeKiller()
+  {
+    return Filters.computeDefaultBitmapResults(LIKE_KILLER, selector);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public ImmutableBitmap matchRegexKiller()
+  {
+    return Filters.computeDefaultBitmapResults(REGEX_KILLER, selector);
   }
 
   private List<Integer> generateInts()

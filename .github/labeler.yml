@@ -88,4 +88,9 @@
 'Kubernetes':
   - changed-files:
     - any-glob-to-any-file:
-      - 'extensions-contrib/kubernetes-overlord-extensions/**'
+      - 'extensions-core/kubernetes-overlord-extensions/**'
+
+'GHA':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**'

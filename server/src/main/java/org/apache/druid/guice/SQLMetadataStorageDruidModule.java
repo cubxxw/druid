@@ -23,14 +23,10 @@ import com.google.inject.Binder;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import org.apache.druid.audit.AuditManager;
-import org.apache.druid.indexer.MetadataStorageUpdaterJobHandler;
-import org.apache.druid.indexer.SQLMetadataStorageUpdaterJobHandler;
 import org.apache.druid.indexing.overlord.IndexerMetadataStorageCoordinator;
 import org.apache.druid.metadata.IndexerSQLMetadataStorageCoordinator;
 import org.apache.druid.metadata.MetadataRuleManager;
 import org.apache.druid.metadata.MetadataRuleManagerProvider;
-import org.apache.druid.metadata.MetadataSegmentPublisher;
-import org.apache.druid.metadata.MetadataSegmentPublisherProvider;
 import org.apache.druid.metadata.MetadataStorageActionHandlerFactory;
 import org.apache.druid.metadata.MetadataStorageConnector;
 import org.apache.druid.metadata.MetadataStorageProvider;
@@ -38,13 +34,15 @@ import org.apache.druid.metadata.MetadataSupervisorManager;
 import org.apache.druid.metadata.SQLMetadataConnector;
 import org.apache.druid.metadata.SQLMetadataRuleManager;
 import org.apache.druid.metadata.SQLMetadataRuleManagerProvider;
-import org.apache.druid.metadata.SQLMetadataSegmentPublisher;
-import org.apache.druid.metadata.SQLMetadataSegmentPublisherProvider;
 import org.apache.druid.metadata.SQLMetadataSupervisorManager;
 import org.apache.druid.metadata.SegmentsMetadataManager;
 import org.apache.druid.metadata.SegmentsMetadataManagerProvider;
 import org.apache.druid.metadata.SqlSegmentsMetadataManager;
 import org.apache.druid.metadata.SqlSegmentsMetadataManagerProvider;
+import org.apache.druid.metadata.segment.SegmentMetadataTransactionFactory;
+import org.apache.druid.metadata.segment.SqlSegmentMetadataTransactionFactory;
+import org.apache.druid.metadata.segment.cache.NoopSegmentMetadataCache;
+import org.apache.druid.metadata.segment.cache.SegmentMetadataCache;
 import org.apache.druid.server.audit.AuditManagerConfig;
 import org.apache.druid.server.audit.AuditSerdeHelper;
 import org.apache.druid.server.audit.SQLAuditManager;
@@ -76,11 +74,9 @@ public class SQLMetadataStorageDruidModule implements Module
     PolyBind.createChoiceWithDefault(binder, prop, Key.get(SegmentsMetadataManagerProvider.class), defaultValue);
     PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataRuleManager.class), defaultValue);
     PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataRuleManagerProvider.class), defaultValue);
-    PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataSegmentPublisher.class), defaultValue);
-    PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataSegmentPublisherProvider.class), defaultValue);
+    PolyBind.createChoiceWithDefault(binder, prop, Key.get(SegmentMetadataTransactionFactory.class), defaultValue);
     PolyBind.createChoiceWithDefault(binder, prop, Key.get(IndexerMetadataStorageCoordinator.class), defaultValue);
     PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataStorageActionHandlerFactory.class), defaultValue);
-    PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataStorageUpdaterJobHandler.class), defaultValue);
     PolyBind.createChoiceWithDefault(binder, prop, Key.get(MetadataSupervisorManager.class), defaultValue);
 
     configureAuditManager(binder);
@@ -109,25 +105,21 @@ public class SQLMetadataStorageDruidModule implements Module
             .to(SQLMetadataRuleManagerProvider.class)
             .in(LazySingleton.class);
 
-    PolyBind.optionBinder(binder, Key.get(MetadataSegmentPublisher.class))
-            .addBinding(type)
-            .to(SQLMetadataSegmentPublisher.class)
-            .in(LazySingleton.class);
+    // SegmentMetadataCache is used only by the Overlord
+    // Bind to noop implementation here to fulfill dependencies
+    binder.bind(SegmentMetadataCache.class)
+          .to(NoopSegmentMetadataCache.class)
+          .in(LazySingleton.class);
 
-    PolyBind.optionBinder(binder, Key.get(MetadataSegmentPublisherProvider.class))
+    PolyBind.optionBinder(binder, Key.get(SegmentMetadataTransactionFactory.class))
             .addBinding(type)
-            .to(SQLMetadataSegmentPublisherProvider.class)
+            .to(SqlSegmentMetadataTransactionFactory.class)
             .in(LazySingleton.class);
 
     PolyBind.optionBinder(binder, Key.get(IndexerMetadataStorageCoordinator.class))
             .addBinding(type)
             .to(IndexerSQLMetadataStorageCoordinator.class)
             .in(ManageLifecycle.class);
-
-    PolyBind.optionBinder(binder, Key.get(MetadataStorageUpdaterJobHandler.class))
-            .addBinding(type)
-            .to(SQLMetadataStorageUpdaterJobHandler.class)
-            .in(LazySingleton.class);
 
     PolyBind.optionBinder(binder, Key.get(MetadataSupervisorManager.class))
             .addBinding(type)

@@ -20,7 +20,6 @@
 package org.apache.druid.msq.statistics;
 
 import com.google.common.collect.ImmutableList;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.frame.key.ClusterBy;
 import org.apache.druid.frame.key.ClusterByPartition;
 import org.apache.druid.frame.key.ClusterByPartitions;
@@ -43,18 +42,15 @@ import java.util.NoSuchElementException;
 public class QuantilesSketchKeyCollectorTest
 {
   private final ClusterBy clusterBy = new ClusterBy(ImmutableList.of(new KeyColumn("x", KeyOrder.ASCENDING)), 0);
-  private final Comparator<RowKey> comparator = clusterBy.keyComparator();
+  private final RowSignature signature = RowSignature.builder().add("x", ColumnType.LONG).build();
+  private final Comparator<RowKey> comparator = clusterBy.keyComparator(signature);
   private final int numKeys = 500_000;
-
-  static {
-    NullHandling.initializeForTests();
-  }
 
   @Test
   public void test_empty()
   {
     KeyCollectorTestUtils.doTest(
-        QuantilesSketchKeyCollectorFactory.create(clusterBy),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature),
         Collections.emptyList(),
         comparator,
         (testName, collector) -> {
@@ -78,7 +74,7 @@ public class QuantilesSketchKeyCollectorTest
         ClusterByStatisticsCollectorImplTest.computeSortedKeyWeightsFromWeightedKeys(keyWeights, comparator);
 
     KeyCollectorTestUtils.doTest(
-        QuantilesSketchKeyCollectorFactory.create(clusterBy),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature),
         keyWeights,
         comparator,
         (testName, collector) -> {
@@ -96,7 +92,7 @@ public class QuantilesSketchKeyCollectorTest
         ClusterByStatisticsCollectorImplTest.computeSortedKeyWeightsFromWeightedKeys(keyWeights, comparator);
 
     KeyCollectorTestUtils.doTest(
-        QuantilesSketchKeyCollectorFactory.create(clusterBy),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature),
         keyWeights,
         comparator,
         (testName, collector) -> {
@@ -114,7 +110,7 @@ public class QuantilesSketchKeyCollectorTest
         ClusterByStatisticsCollectorImplTest.computeSortedKeyWeightsFromWeightedKeys(keyWeights, comparator).firstKey();
 
     KeyCollectorTestUtils.doTest(
-        QuantilesSketchKeyCollectorFactory.create(clusterBy),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature),
         keyWeights,
         comparator,
         (testName, collector) -> {
@@ -147,7 +143,7 @@ public class QuantilesSketchKeyCollectorTest
         ClusterByStatisticsCollectorImplTest.computeSortedKeyWeightsFromWeightedKeys(keyWeights, comparator);
 
     KeyCollectorTestUtils.doTest(
-        QuantilesSketchKeyCollectorFactory.create(clusterBy),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature),
         keyWeights,
         comparator,
         (testName, collector) -> {
@@ -169,8 +165,8 @@ public class QuantilesSketchKeyCollectorTest
   public void testAverageKeyLength()
   {
     final QuantilesSketchKeyCollector collector =
-        QuantilesSketchKeyCollectorFactory.create(clusterBy).newKeyCollector();
-    final QuantilesSketchKeyCollector other = QuantilesSketchKeyCollectorFactory.create(clusterBy).newKeyCollector();
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature).newKeyCollector();
+    final QuantilesSketchKeyCollector other = QuantilesSketchKeyCollectorFactory.create(clusterBy, signature).newKeyCollector();
 
     RowSignature smallKeySignature = KeyTestUtils.createKeySignature(
         new ClusterBy(ImmutableList.of(new KeyColumn("x", KeyOrder.ASCENDING)), 0).getColumns(),
@@ -219,7 +215,7 @@ public class QuantilesSketchKeyCollectorTest
         ClusterByStatisticsCollectorImplTest.computeSortedKeyWeightsFromWeightedKeys(keyWeights, comparator);
 
     KeyCollectorTestUtils.doTest(
-        QuantilesSketchKeyCollectorFactory.create(clusterBy),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, signature),
         keyWeights,
         comparator,
         (testName, collector) -> {

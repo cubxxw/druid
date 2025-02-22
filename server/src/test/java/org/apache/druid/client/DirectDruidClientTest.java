@@ -19,13 +19,14 @@
 
 package org.apache.druid.client;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import org.apache.druid.client.selector.ConnectionCountServerSelectorStrategy;
 import org.apache.druid.client.selector.HighestPriorityTierSelectorStrategy;
-import org.apache.druid.client.selector.QueryableDruidServer;
 import org.apache.druid.client.selector.ServerSelector;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.DateTimes;
@@ -38,13 +39,14 @@ import org.apache.druid.java.util.http.client.Request;
 import org.apache.druid.java.util.http.client.response.HttpResponseHandler;
 import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
 import org.apache.druid.query.Druids;
+import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryInterruptedException;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunnerTestHelper;
 import org.apache.druid.query.QueryTimeoutException;
-import org.apache.druid.query.ReflectionQueryToolChestWarehouse;
 import org.apache.druid.query.Result;
 import org.apache.druid.query.timeboundary.TimeBoundaryQuery;
+import org.apache.druid.server.QueryStackTests;
 import org.apache.druid.server.coordination.ServerType;
 import org.apache.druid.server.metrics.NoopServiceEmitter;
 import org.apache.druid.timeline.DataSegment;
@@ -58,6 +60,7 @@ import org.joda.time.Duration;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.ClassRule;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
@@ -74,6 +77,9 @@ import java.util.concurrent.TimeUnit;
 
 public class DirectDruidClientTest
 {
+  @ClassRule
+  public static QueryStackTests.Junit4ConglomerateRule conglomerateRule = new QueryStackTests.Junit4ConglomerateRule();
+
   private final String hostName = "localhost:8080";
 
   private final DataSegment dataSegment = new DataSegment(
@@ -104,7 +110,7 @@ public class DirectDruidClientTest
     );
     queryCancellationExecutor = Execs.scheduledSingleThreaded("query-cancellation-executor");
     client = new DirectDruidClient(
-        new ReflectionQueryToolChestWarehouse(),
+        conglomerateRule.getConglomerate(),
         QueryRunnerTestHelper.NOOP_QUERYWATCHER,
         new DefaultObjectMapper(),
         httpClient,
@@ -176,7 +182,7 @@ public class DirectDruidClientTest
     EasyMock.replay(httpClient);
 
     DirectDruidClient client2 = new DirectDruidClient(
-        new ReflectionQueryToolChestWarehouse(),
+        conglomerateRule.getConglomerate(),
         QueryRunnerTestHelper.NOOP_QUERYWATCHER,
         new DefaultObjectMapper(),
         httpClient,
@@ -426,5 +432,48 @@ public class DirectDruidClientTest
     Assert.assertEquals(StringUtils.format("Query [%s] timed out!", queryId), actualException.getMessage());
     Assert.assertEquals(hostName, actualException.getHost());
     EasyMock.verify(httpClient);
+  }
+
+  @Test
+  public void testConnectionCountAfterException() throws JsonProcessingException
+  {
+    ObjectMapper mockObjectMapper = EasyMock.createMock(ObjectMapper.class);
+    EasyMock.expect(mockObjectMapper.writeValueAsBytes(Query.class))
+            .andThrow(new JsonProcessingException("Error")
+            {
+            });
+
+    DirectDruidClient client2 = new DirectDruidClient(
+        conglomerateRule.getConglomerate(),
+        QueryRunnerTestHelper.NOOP_QUERYWATCHER,
+        mockObjectMapper,
+        httpClient,
+        "http",
+        hostName,
+        new NoopServiceEmitter(),
+        queryCancellationExecutor
+    );
+
+    QueryableDruidServer queryableDruidServer2 = new QueryableDruidServer(
+        new DruidServer(
+            "test1",
+            "localhost",
+            null,
+            0,
+            ServerType.HISTORICAL,
+            DruidServer.DEFAULT_TIER,
+            0
+        ),
+        client2
+    );
+
+    serverSelector.addServerAndUpdateSegment(queryableDruidServer2, serverSelector.getSegment());
+
+    TimeBoundaryQuery query = Druids.newTimeBoundaryQueryBuilder().dataSource("test").build();
+    query = query.withOverriddenContext(ImmutableMap.of(DirectDruidClient.QUERY_FAIL_TIME, Long.MAX_VALUE));
+
+    TimeBoundaryQuery finalQuery = query;
+    Assert.assertThrows(RuntimeException.class, () -> client2.run(QueryPlus.wrap(finalQuery)));
+    Assert.assertEquals(0, client2.getNumOpenConnections());
   }
 }

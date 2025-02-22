@@ -31,6 +31,7 @@ import org.apache.druid.segment.selector.settable.SettableObjectColumnValueSelec
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 
 import javax.annotation.Nullable;
+import java.io.File;
 import java.util.Comparator;
 
 public class NestedCommonFormatColumnHandler implements DimensionHandler<StructuredData, StructuredData, StructuredData>
@@ -77,14 +78,16 @@ public class NestedCommonFormatColumnHandler implements DimensionHandler<Structu
 
   @Override
   public DimensionMergerV9 makeMerger(
+      String outputName,
       IndexSpec indexSpec,
       SegmentWriteOutMedium segmentWriteOutMedium,
       ColumnCapabilities capabilities,
       ProgressIndicator progress,
+      File segmentBaseDir,
       Closer closer
   )
   {
-    return new AutoTypeColumnMerger(name, castTo, indexSpec, segmentWriteOutMedium, closer);
+    return new AutoTypeColumnMerger(name, outputName, castTo, indexSpec, segmentWriteOutMedium, segmentBaseDir, closer);
   }
 
   @Override
@@ -99,8 +102,9 @@ public class NestedCommonFormatColumnHandler implements DimensionHandler<Structu
   public Comparator<ColumnValueSelector> getEncodedValueSelectorComparator()
   {
     if (castTo != null) {
+      final Comparator<Object> typeComparator = castTo.getNullableStrategy();
       return (s1, s2) ->
-          castTo.getStrategy().compare(
+          typeComparator.compare(
               StructuredData.unwrap(s1.getObject()),
               StructuredData.unwrap(s2.getObject())
           );

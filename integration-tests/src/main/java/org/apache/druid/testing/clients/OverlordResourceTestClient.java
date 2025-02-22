@@ -26,8 +26,8 @@ import com.google.inject.Inject;
 import org.apache.druid.client.indexing.TaskStatusResponse;
 import org.apache.druid.indexer.TaskState;
 import org.apache.druid.indexer.TaskStatusPlus;
-import org.apache.druid.indexing.common.IngestionStatsAndErrorsTaskReport;
-import org.apache.druid.indexing.common.IngestionStatsAndErrorsTaskReportData;
+import org.apache.druid.indexer.report.IngestionStatsAndErrorsTaskReport;
+import org.apache.druid.indexer.report.TaskReport;
 import org.apache.druid.indexing.overlord.http.TaskPayloadResponse;
 import org.apache.druid.indexing.overlord.supervisor.SupervisorStateManager;
 import org.apache.druid.java.util.common.ISE;
@@ -39,6 +39,7 @@ import org.apache.druid.java.util.http.client.HttpClient;
 import org.apache.druid.java.util.http.client.Request;
 import org.apache.druid.java.util.http.client.response.StatusResponseHandler;
 import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
+import org.apache.druid.metadata.LockFilterPolicy;
 import org.apache.druid.segment.incremental.RowIngestionMetersTotals;
 import org.apache.druid.testing.IntegrationTestingConfig;
 import org.apache.druid.testing.guice.TestClient;
@@ -116,6 +117,22 @@ public class OverlordResourceTestClient
     }
   }
 
+  public StatusResponseHolder submitTaskAndReturnStatusWithAuth(
+      final String task,
+      final String username,
+      final String password
+  ) throws Exception
+  {
+    return httpClient.go(
+        new Request(HttpMethod.POST, new URL(getIndexerURL() + "task"))
+            .setContent(
+                "application/json",
+                StringUtils.toUtf8(task)
+            ).setBasicAuthentication(username, password),
+        StatusResponseHandler.getInstance()
+    ).get();
+  }
+
   public TaskStatusPlus getTaskStatus(String taskID)
   {
     try {
@@ -130,11 +147,39 @@ public class OverlordResourceTestClient
       LOG.debug("Index status response" + response.getContent());
       TaskStatusResponse taskStatusResponse = jsonMapper.readValue(
           response.getContent(),
-          new TypeReference<TaskStatusResponse>()
-          {
-          }
+          new TypeReference<>() {}
       );
       return taskStatusResponse.getStatus();
+    }
+    catch (ISE e) {
+      throw e;
+    }
+    catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  public StatusResponseHolder handoffTaskGroupEarly(
+      String dataSource,
+      String taskGroups
+  )
+  {
+    try {
+      LOG.info("handing off %s %s", dataSource, taskGroups);
+      StatusResponseHolder response = httpClient.go(
+          new Request(HttpMethod.POST, new URL(StringUtils.format(
+              "%ssupervisor/%s/taskGroups/handoff",
+              getIndexerURL(),
+              StringUtils.urlEncode(dataSource)
+          ))).setContent(
+                  "application/json",
+                  StringUtils.toUtf8(taskGroups)
+              ),
+          StatusResponseHandler.getInstance()
+      ).get();
+      LOG.info("Handoff early response code " + response.getStatus().getCode());
+      LOG.info("Handoff early response " + response.getContent());
+      return response;
     }
     catch (ISE e) {
       throw e;
@@ -185,11 +230,11 @@ public class OverlordResourceTestClient
           HttpMethod.GET,
           StringUtils.format("%s%s", getIndexerURL(), identifier)
       );
-      LOG.debug("Tasks %s response %s", identifier, response.getContent());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Tasks %s response %s", identifier, response.getContent());
+      }
       return jsonMapper.readValue(
-          response.getContent(), new TypeReference<List<TaskResponseObject>>()
-          {
-          }
+          response.getContent(), new TypeReference<>() {}
       );
     }
     catch (Exception e) {
@@ -204,11 +249,11 @@ public class OverlordResourceTestClient
           HttpMethod.GET,
           StringUtils.format("%stask/%s", getIndexerURL(), StringUtils.urlEncode(taskId))
       );
-      LOG.debug("Task %s response %s", taskId, response.getContent());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Task %s response %s", taskId, response.getContent());
+      }
       return jsonMapper.readValue(
-          response.getContent(), new TypeReference<TaskPayloadResponse>()
-          {
-          }
+          response.getContent(), new TypeReference<>() {}
       );
     }
     catch (ISE e) {
@@ -243,13 +288,16 @@ public class OverlordResourceTestClient
 
   public String getTaskErrorMessage(String taskId)
   {
-    return ((IngestionStatsAndErrorsTaskReportData) getTaskReport(taskId).get("ingestionStatsAndErrors").getPayload()).getErrorMsg();
+    return ((IngestionStatsAndErrorsTaskReport) getTaskReport(taskId).get(IngestionStatsAndErrorsTaskReport.REPORT_KEY))
+        .getPayload().getErrorMsg();
   }
 
   public RowIngestionMetersTotals getTaskStats(String taskId)
   {
     try {
-      Object buildSegment = ((IngestionStatsAndErrorsTaskReportData) getTaskReport(taskId).get("ingestionStatsAndErrors").getPayload()).getRowStats().get("buildSegments");
+      Object buildSegment = ((IngestionStatsAndErrorsTaskReport) getTaskReport(taskId).get(
+          IngestionStatsAndErrorsTaskReport.REPORT_KEY))
+          .getPayload().getRowStats().get("buildSegments");
       return jsonMapper.convertValue(buildSegment, RowIngestionMetersTotals.class);
     }
     catch (Exception e) {
@@ -257,7 +305,7 @@ public class OverlordResourceTestClient
     }
   }
 
-  public Map<String, IngestionStatsAndErrorsTaskReport> getTaskReport(String taskId)
+  public TaskReport.ReportMap getTaskReport(String taskId)
   {
     try {
       StatusResponseHolder response = makeRequest(
@@ -270,9 +318,7 @@ public class OverlordResourceTestClient
       );
       return jsonMapper.readValue(
           response.getContent(),
-          new TypeReference<Map<String, IngestionStatsAndErrorsTaskReport>>()
-          {
-          }
+          TaskReport.ReportMap.class
       );
     }
     catch (ISE e) {
@@ -283,13 +329,13 @@ public class OverlordResourceTestClient
     }
   }
 
-  public Map<String, List<Interval>> getLockedIntervals(Map<String, Integer> minTaskPriority)
+  public Map<String, List<Interval>> getLockedIntervals(List<LockFilterPolicy> lockFilterPolicies)
   {
     try {
-      String jsonBody = jsonMapper.writeValueAsString(minTaskPriority);
+      String jsonBody = jsonMapper.writeValueAsString(lockFilterPolicies);
 
       StatusResponseHolder response = httpClient.go(
-          new Request(HttpMethod.POST, new URL(getIndexerURL() + "lockedIntervals"))
+          new Request(HttpMethod.POST, new URL(getIndexerURL() + "lockedIntervals/v2"))
               .setContent(
                   "application/json",
                   StringUtils.toUtf8(jsonBody)
@@ -298,9 +344,7 @@ public class OverlordResourceTestClient
       ).get();
       return jsonMapper.readValue(
           response.getContent(),
-          new TypeReference<Map<String, List<Interval>>>()
-          {
-          }
+          new TypeReference<>() {}
       );
     }
     catch (Exception e) {
@@ -316,7 +360,7 @@ public class OverlordResourceTestClient
   public void waitUntilTaskCompletes(final String taskID, final long millisEach, final int numTimes)
   {
     ITRetryUtil.retryUntil(
-        new Callable<Boolean>()
+        new Callable<>()
         {
           @Override
           public Boolean call()
@@ -346,7 +390,7 @@ public class OverlordResourceTestClient
   public void waitUntilTaskFails(final String taskID, final long millisEach, final int numTimes)
   {
     ITRetryUtil.retryUntil(
-        new Callable<Boolean>()
+        new Callable<>()
         {
           @Override
           public Boolean call()
@@ -706,9 +750,7 @@ public class OverlordResourceTestClient
         );
       }
       List<Object> responseData = jsonMapper.readValue(
-          response.getContent(), new TypeReference<List<Object>>()
-          {
-          }
+          response.getContent(), new TypeReference<>() {}
       );
       return responseData;
     }

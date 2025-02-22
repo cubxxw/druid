@@ -24,10 +24,11 @@ import org.apache.druid.collections.bitmap.BitmapFactory;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
 import org.apache.druid.collections.bitmap.MutableBitmap;
 import org.apache.druid.collections.bitmap.RoaringBitmapFactory;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.query.filter.ColumnIndexSelector;
 import org.apache.druid.query.filter.InDimFilter;
+import org.apache.druid.query.filter.TypedInFilter;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.data.BitmapSerdeFactory;
 import org.apache.druid.segment.data.GenericIndexed;
 import org.apache.druid.segment.data.RoaringBitmapSerdeFactory;
@@ -53,18 +54,16 @@ import java.util.stream.IntStream;
 
 @State(Scope.Benchmark)
 @Fork(value = 1)
-@Warmup(iterations = 10)
-@Measurement(iterations = 10)
+@Warmup(iterations = 2)
+@Measurement(iterations = 3)
 public class InFilterBenchmark
 {
-  static {
-    NullHandling.initializeForTests();
-  }
-
   private static final int START_INT = 10_000_000;
 
   private InDimFilter inFilter;
   private InDimFilter endInDimFilter;
+  private TypedInFilter newInFilter;
+  private TypedInFilter newEndInFilter;
 
   // cardinality of the dictionary. it will contain this many ints (as strings, of course), starting at START_INT,
   // even numbers only.
@@ -110,12 +109,29 @@ public class InFilterBenchmark
         "dummy",
         IntStream.range(START_INT, START_INT + filterSize).mapToObj(String::valueOf).collect(Collectors.toSet())
     );
+    newInFilter = (TypedInFilter) new TypedInFilter(
+        "dummy",
+        ColumnType.STRING,
+        IntStream.range(START_INT, START_INT + filterSize).mapToObj(String::valueOf).collect(Collectors.toList()),
+        null,
+        null
+    ).toFilter();
     endInDimFilter = new InDimFilter(
         "dummy",
         IntStream.range(START_INT + dictionarySize * 2, START_INT + dictionarySize * 2 + 1)
                  .mapToObj(String::valueOf)
                  .collect(Collectors.toSet())
     );
+
+    newEndInFilter = (TypedInFilter) new TypedInFilter(
+        "dummy",
+        ColumnType.STRING,
+        IntStream.range(START_INT + dictionarySize * 2, START_INT + dictionarySize * 2 + 1)
+                 .mapToObj(String::valueOf)
+                 .collect(Collectors.toList()),
+        null,
+        null
+    ).toFilter();
   }
 
   @Benchmark
@@ -133,6 +149,24 @@ public class InFilterBenchmark
   public void doFilterAtEnd(Blackhole blackhole)
   {
     final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(endInDimFilter, selector);
+    blackhole.consume(bitmapIndex);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public void doFilter2(Blackhole blackhole)
+  {
+    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(newInFilter, selector);
+    blackhole.consume(bitmapIndex);
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MICROSECONDS)
+  public void doFilterAtEnd2(Blackhole blackhole)
+  {
+    final ImmutableBitmap bitmapIndex = Filters.computeDefaultBitmapResults(newEndInFilter, selector);
     blackhole.consume(bitmapIndex);
   }
 

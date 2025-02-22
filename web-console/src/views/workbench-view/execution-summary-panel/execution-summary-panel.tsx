@@ -16,18 +16,20 @@
  * limitations under the License.
  */
 
-import { Button, ButtonGroup, Menu, MenuDivider, MenuItem, Position } from '@blueprintjs/core';
+import { Button, ButtonGroup, Menu, MenuItem, Popover, Position } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Popover2 } from '@blueprintjs/popover2';
 import type { JSX } from 'react';
 import React, { useState } from 'react';
 
 import type { Execution } from '../../../druid-models';
+import type { Format } from '../../../utils';
 import {
+  copyAndAlert,
   copyQueryResultsToClipboard,
   downloadQueryResults,
   formatDurationHybrid,
   formatInteger,
+  oneOf,
   pluralIfNeeded,
 } from '../../../utils';
 import { DestinationPagesDialog } from '../destination-pages-dialog/destination-pages-dialog';
@@ -36,6 +38,7 @@ import './execution-summary-panel.scss';
 
 export interface ExecutionSummaryPanelProps {
   execution: Execution | undefined;
+  queryErrorDuration: number | undefined;
   onExecutionDetail(): void;
   onReset?: () => void;
 }
@@ -43,11 +46,21 @@ export interface ExecutionSummaryPanelProps {
 export const ExecutionSummaryPanel = React.memo(function ExecutionSummaryPanel(
   props: ExecutionSummaryPanelProps,
 ) {
-  const { execution, onExecutionDetail, onReset } = props;
+  const { execution, queryErrorDuration, onExecutionDetail, onReset } = props;
   const [showDestinationPages, setShowDestinationPages] = useState(false);
   const queryResult = execution?.result;
 
   const buttons: JSX.Element[] = [];
+
+  if (typeof queryErrorDuration === 'number') {
+    buttons.push(
+      <Button
+        key="timing"
+        minimal
+        text={`Error after ${formatDurationHybrid(queryErrorDuration)}`}
+      />,
+    );
+  }
 
   if (queryResult) {
     const wrapQueryLimit = queryResult.getSqlOuterLimit();
@@ -65,11 +78,11 @@ export const ExecutionSummaryPanel = React.memo(function ExecutionSummaryPanel(
 
     const warningCount = execution?.stages?.getWarningCount();
 
-    const handleDownload = (format: string) => {
+    const handleDownload = (format: Format) => {
       downloadQueryResults(queryResult, `results-${execution.id}.${format}`, format);
     };
 
-    const handleCopy = (format: string) => {
+    const handleCopy = (format: Format) => {
       copyQueryResultsToClipboard(queryResult, format);
     };
 
@@ -84,44 +97,65 @@ export const ExecutionSummaryPanel = React.memo(function ExecutionSummaryPanel(
         }
         onClick={() => {
           if (!execution) return;
-          if (execution.engine === 'sql-msq-task') {
+          if (oneOf(execution.engine, 'sql-msq-task', 'sql-msq-dart')) {
             onExecutionDetail();
+          } else {
+            copyAndAlert(execution.id, `Query ID (${execution.id}) copied to clipboard`);
           }
         }}
+        data-tooltip={
+          execution &&
+          (oneOf(execution.engine, 'sql-msq-task', 'sql-msq-dart')
+            ? `Open details for\n${execution.id}`
+            : `Query ID\n${execution.id}\n(click to copy)`)
+        }
       />,
       execution?.destination?.type === 'durableStorage' && execution.destinationPages ? (
         <Button
           key="download"
           icon={IconNames.DOWNLOAD}
+          data-tooltip="Download data"
           minimal
           onClick={() => setShowDestinationPages(true)}
         />
       ) : (
-        <Popover2
+        <Popover
           key="download"
           className="download-button"
           content={
             <Menu>
-              <MenuDivider title="Download results as..." />
-              <MenuItem text="CSV" onClick={() => handleDownload('csv')} />
-              <MenuItem text="TSV" onClick={() => handleDownload('tsv')} />
-              <MenuItem text="JSON (new line delimited)" onClick={() => handleDownload('json')} />
-              <MenuDivider title="Copy to clipboard as..." />
-              <MenuItem text="CSV" onClick={() => handleCopy('csv')} />
-              <MenuItem text="TSV" onClick={() => handleCopy('tsv')} />
-              <MenuItem text="JSON (new line delimited)" onClick={() => handleCopy('json')} />
+              <MenuItem text="Download results as...">
+                <MenuItem text="CSV" onClick={() => handleDownload('csv')} />
+                <MenuItem text="TSV" onClick={() => handleDownload('tsv')} />
+                <MenuItem text="JSON (new line delimited)" onClick={() => handleDownload('json')} />
+                <MenuItem text="SQL (VALUES)" onClick={() => handleDownload('sql')} />
+              </MenuItem>
+              <MenuItem text="Copy to clipboard as...">
+                <MenuItem text="CSV" onClick={() => handleCopy('csv')} />
+                <MenuItem text="TSV" onClick={() => handleCopy('tsv')} />
+                <MenuItem text="JSON (new line delimited)" onClick={() => handleCopy('json')} />
+                <MenuItem text="SQL (VALUES)" onClick={() => handleCopy('sql')} />
+              </MenuItem>
             </Menu>
           }
           position={Position.BOTTOM_RIGHT}
         >
-          <Button icon={IconNames.DOWNLOAD} minimal />
-        </Popover2>
+          <Button icon={IconNames.DOWNLOAD} data-tooltip="Download data in view" minimal />
+        </Popover>
       ),
     );
   }
 
   if (onReset) {
-    buttons.push(<Button key="reset" icon={IconNames.CROSS} minimal onClick={onReset} />);
+    buttons.push(
+      <Button
+        key="reset"
+        icon={IconNames.CROSS}
+        data-tooltip="Clear output"
+        minimal
+        onClick={onReset}
+      />,
+    );
   }
 
   return (

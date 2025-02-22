@@ -20,19 +20,18 @@
 package org.apache.druid.frame.write;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.common.hash.Hashing;
 import it.unimi.dsi.fastutil.objects.ObjectArrays;
-import org.apache.druid.common.config.NullHandling;
+import org.apache.druid.frame.key.ByteRowKeyComparatorTest;
 import org.apache.druid.frame.key.KeyOrder;
 import org.apache.druid.hll.HyperLogLogCollector;
 import org.apache.druid.java.util.common.ISE;
-import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.guava.Comparators;
 import org.apache.druid.query.aggregation.hyperloglog.HyperUniquesAggregatorFactory;
 import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.nested.StructuredData;
 
-import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -50,7 +49,7 @@ public class FrameWriterTestData
       ColumnType.STRING,
       Arrays.asList(
           null,
-          NullHandling.emptyToNullIfNeeded(""), // Empty string in SQL-compatible mode, null otherwise
+          "",
           "brown",
           "dog",
           "fox",
@@ -74,7 +73,7 @@ public class FrameWriterTestData
       ColumnType.STRING,
       Arrays.asList(
           Collections.emptyList(),
-          NullHandling.emptyToNullIfNeeded(""), // Empty string in SQL-compatible mode, null otherwise
+          "",
           "brown",
           "dog",
           "fox",
@@ -100,13 +99,13 @@ public class FrameWriterTestData
       Arrays.asList(
           Collections.emptyList(),
           null,
-          NullHandling.emptyToNullIfNeeded(""),
+          "",
           "foo",
           Arrays.asList("lazy", "dog"),
           "qux",
           Arrays.asList("the", "quick", "brown"),
           Arrays.asList("the", "quick", "brown", null),
-          Arrays.asList("the", "quick", "brown", NullHandling.emptyToNullIfNeeded("")),
+          Arrays.asList("the", "quick", "brown", ""),
           Arrays.asList("the", "quick", "brown", "fox"),
           Arrays.asList("the", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog"),
           Arrays.asList("the", "quick", "brown", "null"),
@@ -126,12 +125,12 @@ public class FrameWriterTestData
           null,
           ObjectArrays.EMPTY_ARRAY,
           new Object[]{null},
-          new Object[]{NullHandling.emptyToNullIfNeeded("")},
+          new Object[]{""},
           new Object[]{"dog"},
           new Object[]{"lazy"},
           new Object[]{"the", "quick", "brown"},
           new Object[]{"the", "quick", "brown", null},
-          new Object[]{"the", "quick", "brown", NullHandling.emptyToNullIfNeeded("")},
+          new Object[]{"the", "quick", "brown", ""},
           new Object[]{"the", "quick", "brown", "fox"},
           new Object[]{"the", "quick", "brown", "fox", "jumps", "over", "the", "lazy", "dog"},
           new Object[]{"the", "quick", "brown", "null"},
@@ -143,7 +142,7 @@ public class FrameWriterTestData
   public static final Dataset<Long> TEST_LONGS = new Dataset<>(
       ColumnType.LONG,
       Stream.of(
-          NullHandling.defaultLongValue(),
+          null,
           0L,
           -1L,
           1L,
@@ -167,7 +166,7 @@ public class FrameWriterTestData
           ObjectArrays.EMPTY_ARRAY,
           new Object[]{null},
           new Object[]{null, 6L, null, 5L, null},
-          new Object[]{null, 6L, null, 5L, NullHandling.defaultLongValue()},
+          new Object[]{null, 6L, null, 5L, null},
           new Object[]{null, 6L, null, 5L, 0L, -1L},
           new Object[]{null, 6L, null, 5L, 0L, -1L, Long.MIN_VALUE},
           new Object[]{null, 6L, null, 5L, 0L, -1L, Long.MAX_VALUE},
@@ -183,7 +182,7 @@ public class FrameWriterTestData
       Stream.of(
           0f,
           -0f,
-          NullHandling.defaultFloatValue(),
+          null,
           -1f,
           1f,
           //CHECKSTYLE.OFF: Regexp
@@ -208,7 +207,7 @@ public class FrameWriterTestData
           ObjectArrays.EMPTY_ARRAY,
           new Object[]{null},
           new Object[]{null, 6.2f, null, 5.1f, null},
-          new Object[]{null, 6.2f, null, 5.1f, NullHandling.defaultFloatValue()},
+          new Object[]{null, 6.2f, null, 5.1f, null},
           new Object[]{null, 6.2f, null, 5.7f, 0.0f, -1.0f},
           new Object[]{null, 6.2f, null, 5.7f, 0.0f, -1.0f, Float.MIN_VALUE},
           new Object[]{null, 6.2f, null, 5.7f, 0.0f, -1.0f, Float.MAX_VALUE},
@@ -227,7 +226,7 @@ public class FrameWriterTestData
       Stream.of(
           0d,
           -0d,
-          NullHandling.defaultDoubleValue(),
+          null,
           -1e-122d,
           1e122d,
           //CHECKSTYLE.OFF: Regexp
@@ -252,7 +251,7 @@ public class FrameWriterTestData
           ObjectArrays.EMPTY_ARRAY,
           new Object[]{null},
           new Object[]{null, 6.2d, null, 5.1d, null},
-          new Object[]{null, 6.2d, null, 5.1d, NullHandling.defaultDoubleValue()},
+          new Object[]{null, 6.2d, null, 5.1d, null},
           new Object[]{null, 6.2d, null, 5.7d, 0.0d, -1.0d},
           new Object[]{null, 6.2d, null, 5.7d, 0.0d, -1.0d, Double.MIN_VALUE},
           new Object[]{null, 6.2d, null, 5.7d, 0.0d, -1.0d, Double.MAX_VALUE},
@@ -266,13 +265,32 @@ public class FrameWriterTestData
   );
   //CHECKSTYLE.ON: Regexp
 
-  public static final Dataset<HyperLogLogCollector> TEST_COMPLEX = new Dataset<>(
+  public static final Dataset<HyperLogLogCollector> TEST_COMPLEX_HLL = new Dataset<>(
       HyperUniquesAggregatorFactory.TYPE,
       Arrays.asList(
           null,
-          makeHllCollector(null),
-          makeHllCollector("foo")
+          ByteRowKeyComparatorTest.makeHllCollector(1),
+          ByteRowKeyComparatorTest.makeHllCollector(10),
+          ByteRowKeyComparatorTest.makeHllCollector(50)
       )
+  );
+
+  // Sortedness of structured data depends on the hash value computed for the objects inside.
+  public static final Dataset<StructuredData> TEST_COMPLEX_NESTED = new Dataset<>(
+      ColumnType.NESTED_DATA,
+      Stream.of(
+          null,
+          StructuredData.create("foo"),
+          StructuredData.create("bar"),
+          StructuredData.create(ImmutableMap.of("a", 100, "b", 200)),
+          StructuredData.create(ImmutableMap.of("a", 100, "b", ImmutableList.of("x", "y"))),
+          StructuredData.create(ImmutableMap.of("a", 100, "b", ImmutableMap.of("x", "y"))),
+          StructuredData.wrap(100.1D),
+          StructuredData.wrap(ImmutableList.of("p", "q", "r")),
+          StructuredData.wrap(100),
+          StructuredData.wrap(ImmutableList.of("p", "q", "r")),
+          StructuredData.wrap(1000)
+      ).sorted(Comparators.naturalNullsFirst()).collect(Collectors.toList())
   );
 
   /**
@@ -289,19 +307,9 @@ public class FrameWriterTestData
                    .add(TEST_ARRAYS_LONG)
                    .add(TEST_ARRAYS_FLOAT)
                    .add(TEST_ARRAYS_DOUBLE)
-                   .add(TEST_COMPLEX)
+                   .add(TEST_COMPLEX_HLL)
+                   .add(TEST_COMPLEX_NESTED)
                    .build();
-
-  private static HyperLogLogCollector makeHllCollector(@Nullable final String value)
-  {
-    final HyperLogLogCollector collector = HyperLogLogCollector.makeLatestCollector();
-
-    if (value != null) {
-      collector.add(Hashing.murmur3_128().hashBytes(StringUtils.toUtf8(value)).asBytes());
-    }
-
-    return collector;
-  }
 
   public static class Dataset<T>
   {

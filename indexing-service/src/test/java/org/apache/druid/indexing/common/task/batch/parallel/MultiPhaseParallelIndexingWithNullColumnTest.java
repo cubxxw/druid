@@ -41,6 +41,7 @@ import org.apache.druid.data.input.impl.SplittableInputSource;
 import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.data.input.impl.systemfield.SystemFieldDecoratorFactory;
 import org.apache.druid.indexer.TaskState;
+import org.apache.druid.indexer.granularity.UniformGranularitySpec;
 import org.apache.druid.indexer.partitions.DimensionRangePartitionsSpec;
 import org.apache.druid.indexer.partitions.HashedPartitionsSpec;
 import org.apache.druid.indexer.partitions.PartitionsSpec;
@@ -54,7 +55,6 @@ import org.apache.druid.java.util.common.parsers.JSONPathFieldSpec;
 import org.apache.druid.java.util.common.parsers.JSONPathFieldType;
 import org.apache.druid.java.util.common.parsers.JSONPathSpec;
 import org.apache.druid.segment.indexing.DataSchema;
-import org.apache.druid.segment.indexing.granularity.UniformGranularitySpec;
 import org.apache.druid.timeline.DataSegment;
 import org.joda.time.Interval;
 import org.junit.Assert;
@@ -127,20 +127,20 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
         null,
         null,
         new ParallelIndexIngestionSpec(
-            new DataSchema(
-                DATASOURCE,
-                TIMESTAMP_SPEC,
-                DIMENSIONS_SPEC.withDimensions(dimensionSchemas),
-                DEFAULT_METRICS_SPEC,
-                new UniformGranularitySpec(
-                    Granularities.DAY,
-                    Granularities.MINUTE,
-                    INTERVAL_TO_INDEX
-                ),
-                null
-            ),
+            DataSchema.builder()
+                      .withDataSource(DATASOURCE)
+                      .withTimestamp(DEFAULT_TIMESTAMP_SPEC)
+                      .withDimensions(DEFAULT_DIMENSIONS_SPEC.withDimensions(dimensionSchemas))
+                      .withAggregators(DEFAULT_METRICS_SPEC)
+                      .withGranularity(
+                          new UniformGranularitySpec(
+                              Granularities.DAY,
+                              Granularities.MINUTE,
+                              INTERVAL_TO_INDEX
+                          )
+                      )
+                      .build(),
             new ParallelIndexIOConfig(
-                null,
                 getInputSource(),
                 JSON_FORMAT,
                 false,
@@ -157,7 +157,7 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
 
     Assert.assertEquals(TaskState.SUCCESS, getIndexingServiceClient().runAndWait(task).getStatusCode());
 
-    Set<DataSegment> segments = getIndexingServiceClient().getPublishedSegments(task);
+    Set<DataSegment> segments = getIndexingServiceClient().getSegmentAndSchemas(task).getSegments();
     Assert.assertFalse(segments.isEmpty());
     for (DataSegment segment : segments) {
       Assert.assertEquals(dimensionSchemas.size(), segment.getDimensions().size());
@@ -178,20 +178,22 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
         null,
         null,
         new ParallelIndexIngestionSpec(
-            new DataSchema(
-                DATASOURCE,
-                TIMESTAMP_SPEC,
-                new DimensionsSpec.Builder().setDimensions(dimensionSchemas).setIncludeAllDimensions(true).build(),
-                DEFAULT_METRICS_SPEC,
-                new UniformGranularitySpec(
-                    Granularities.DAY,
-                    Granularities.MINUTE,
-                    INTERVAL_TO_INDEX
-                ),
-                null
-            ),
+            DataSchema.builder()
+                      .withDataSource(DATASOURCE)
+                      .withTimestamp(TIMESTAMP_SPEC)
+                      .withDimensions(
+                          DimensionsSpec.builder().setDimensions(dimensionSchemas).setIncludeAllDimensions(true).build()
+                      )
+                      .withAggregators(DEFAULT_METRICS_SPEC)
+                      .withGranularity(
+                          new UniformGranularitySpec(
+                              Granularities.DAY,
+                              Granularities.MINUTE,
+                              INTERVAL_TO_INDEX
+                          )
+                      )
+                      .build(),
             new ParallelIndexIOConfig(
-                null,
                 getInputSource(),
                 new JsonInputFormat(
                     new JSONPathSpec(true, null),
@@ -214,7 +216,7 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
 
     Assert.assertEquals(TaskState.SUCCESS, getIndexingServiceClient().runAndWait(task).getStatusCode());
 
-    Set<DataSegment> segments = getIndexingServiceClient().getPublishedSegments(task);
+    Set<DataSegment> segments = getIndexingServiceClient().getSegmentAndSchemas(task).getSegments();
     Assert.assertFalse(segments.isEmpty());
     final List<String> expectedExplicitDimensions = ImmutableList.of("ts", "unknownDim", "dim1");
     final Set<String> expectedImplicitDimensions = ImmutableSet.of("dim2", "dim3");
@@ -239,20 +241,22 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
         null,
         null,
         new ParallelIndexIngestionSpec(
-            new DataSchema(
-                DATASOURCE,
-                TIMESTAMP_SPEC,
-                new DimensionsSpec.Builder().setIncludeAllDimensions(true).build(),
-                DEFAULT_METRICS_SPEC,
-                new UniformGranularitySpec(
-                    Granularities.DAY,
-                    Granularities.MINUTE,
-                    null
-                ),
-                null
-            ),
+            DataSchema.builder()
+                      .withDataSource(DATASOURCE)
+                      .withTimestamp(TIMESTAMP_SPEC)
+                      .withDimensions(
+                          DimensionsSpec.builder().setIncludeAllDimensions(true).build()
+                      )
+                      .withAggregators(DEFAULT_METRICS_SPEC)
+                      .withGranularity(
+                          new UniformGranularitySpec(
+                              Granularities.DAY,
+                              Granularities.MINUTE,
+                              null
+                          )
+                      )
+                      .build(),
             new ParallelIndexIOConfig(
-                null,
                 getInputSource(),
                 new JsonInputFormat(
                     new JSONPathSpec(
@@ -281,7 +285,7 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
 
     Assert.assertEquals(TaskState.SUCCESS, getIndexingServiceClient().runAndWait(task).getStatusCode());
 
-    Set<DataSegment> segments = getIndexingServiceClient().getPublishedSegments(task);
+    Set<DataSegment> segments = getIndexingServiceClient().getSegmentAndSchemas(task).getSegments();
     Assert.assertFalse(segments.isEmpty());
     final List<String> expectedExplicitDimensions = ImmutableList.of("dim1", "k");
     final Set<String> expectedImplicitDimensions = ImmutableSet.of("dim2", "dim3");
@@ -306,22 +310,24 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
         null,
         null,
         new ParallelIndexIngestionSpec(
-            new DataSchema(
-                DATASOURCE,
-                TIMESTAMP_SPEC,
-                DIMENSIONS_SPEC.withDimensions(
-                    DimensionsSpec.getDefaultSchemas(Arrays.asList("ts", "unknownDim"))
-                ),
-                DEFAULT_METRICS_SPEC,
-                new UniformGranularitySpec(
-                    Granularities.DAY,
-                    Granularities.MINUTE,
-                    INTERVAL_TO_INDEX
-                ),
-                null
-            ),
+            DataSchema.builder()
+                      .withDataSource(DATASOURCE)
+                      .withTimestamp(TIMESTAMP_SPEC)
+                      .withDimensions(
+                          DIMENSIONS_SPEC.withDimensions(
+                              DimensionsSpec.getDefaultSchemas(Arrays.asList("ts", "unknownDim"))
+                          )
+                      )
+                      .withAggregators(DEFAULT_METRICS_SPEC)
+                      .withGranularity(
+                          new UniformGranularitySpec(
+                              Granularities.DAY,
+                              Granularities.MINUTE,
+                              INTERVAL_TO_INDEX
+                          )
+                      )
+                      .build(),
             new ParallelIndexIOConfig(
-                null,
                 getInputSource(),
                 JSON_FORMAT,
                 false,
@@ -339,7 +345,7 @@ public class MultiPhaseParallelIndexingWithNullColumnTest extends AbstractMultiP
     task.addToContext(Tasks.STORE_EMPTY_COLUMNS_KEY, false);
     Assert.assertEquals(TaskState.SUCCESS, getIndexingServiceClient().runAndWait(task).getStatusCode());
 
-    Set<DataSegment> segments = getIndexingServiceClient().getPublishedSegments(task);
+    Set<DataSegment> segments = getIndexingServiceClient().getSegmentAndSchemas(task).getSegments();
     Assert.assertFalse(segments.isEmpty());
     final List<DimensionSchema> expectedDimensions = DimensionsSpec.getDefaultSchemas(
         Collections.singletonList("ts")

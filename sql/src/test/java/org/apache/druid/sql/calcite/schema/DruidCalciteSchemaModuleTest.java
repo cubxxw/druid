@@ -34,7 +34,6 @@ import org.apache.druid.client.coordinator.Coordinator;
 import org.apache.druid.client.coordinator.CoordinatorClient;
 import org.apache.druid.client.coordinator.NoopCoordinatorClient;
 import org.apache.druid.client.indexing.IndexingService;
-import org.apache.druid.client.indexing.NoopOverlordClient;
 import org.apache.druid.discovery.DruidLeaderClient;
 import org.apache.druid.discovery.DruidNodeDiscoveryProvider;
 import org.apache.druid.guice.LazySingleton;
@@ -43,6 +42,7 @@ import org.apache.druid.guice.annotations.Json;
 import org.apache.druid.java.util.emitter.service.ServiceEmitter;
 import org.apache.druid.query.lookup.LookupExtractorFactoryContainerProvider;
 import org.apache.druid.query.lookup.LookupReferencesManager;
+import org.apache.druid.rpc.indexing.NoopOverlordClient;
 import org.apache.druid.rpc.indexing.OverlordClient;
 import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.segment.join.MapJoinableFactory;
@@ -56,17 +56,17 @@ import org.apache.druid.sql.calcite.planner.PlannerConfig;
 import org.apache.druid.sql.calcite.util.CalciteTestBase;
 import org.apache.druid.sql.calcite.view.ViewManager;
 import org.easymock.EasyMock;
-import org.easymock.EasyMockRunner;
+import org.easymock.EasyMockExtension;
 import org.easymock.Mock;
 import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Set;
 import java.util.stream.Collectors;
 
-@RunWith(EasyMockRunner.class)
+@ExtendWith(EasyMockExtension.class)
 public class DruidCalciteSchemaModuleTest extends CalciteTestBase
 {
   private static final String DRUID_SCHEMA_NAME = "druid";
@@ -103,7 +103,7 @@ public class DruidCalciteSchemaModuleTest extends CalciteTestBase
   private DruidCalciteSchemaModule target;
   private Injector injector;
 
-  @Before
+  @BeforeEach
   public void setUp()
   {
     EasyMock.replay(plannerConfig);
@@ -168,7 +168,7 @@ public class DruidCalciteSchemaModuleTest extends CalciteTestBase
   @Test
   public void testDruidCalciteSchemasAreInjected()
   {
-    Set<NamedSchema> sqlSchemas = injector.getInstance(Key.get(new TypeLiteral<Set<NamedSchema>>(){}));
+    Set<NamedSchema> sqlSchemas = injector.getInstance(Key.get(new TypeLiteral<>() {}));
     Set<Class<? extends NamedSchema>> expectedSchemas =
         ImmutableSet.of(NamedSystemSchema.class, NamedDruidSchema.class, NamedLookupSchema.class, NamedViewSchema.class);
     Assert.assertEquals(expectedSchemas.size(), sqlSchemas.size());

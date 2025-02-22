@@ -280,10 +280,7 @@ The above EXPLAIN PLAN returns the following result:
             ]
           },
           "inputFormat": {
-            "type": "json",
-            "keepNullColumns": false,
-            "assumeNewlineDelimited": false,
-            "useJsonNodeReader": false
+            "type": "json"
           },
           "signature": [
             {
@@ -345,7 +342,6 @@ The above EXPLAIN PLAN returns the following result:
           "regionName",
           "v0"
         ],
-        "legacy": false,
         "context": {
           "finalizeAggregations": false,
           "forceExpressionVirtualColumns": true,
@@ -503,10 +499,7 @@ The above EXPLAIN PLAN query returns the following result:
             ]
           },
           "inputFormat": {
-            "type": "json",
-            "keepNullColumns": false,
-            "assumeNewlineDelimited": false,
-            "useJsonNodeReader": false
+            "type": "json"
           },
           "signature": [
             {
@@ -568,7 +561,6 @@ The above EXPLAIN PLAN query returns the following result:
           "regionName",
           "v0"
         ],
-        "legacy": false,
         "context": {
           "finalizeAggregations": false,
           "groupByEnableMultiValueUnnesting": false,
@@ -811,7 +803,7 @@ the query hits `maxStreamLength`: the maximum number of items to store in each s
 See [GitHub issue 11544](https://github.com/apache/druid/issues/11544) for more details.
 To workaround the issue, increase value of the maximum string length with the `approxQuantileDsMaxStreamLength` parameter
 in the query context. Since it is set to 1,000,000,000 by default, you don't need to override it in most cases.
-See [accuracy information](https://datasketches.apache.org/docs/Quantiles/OrigQuantilesSketch) in the DataSketches documentation for how many bytes are required per stream length.
+See [accuracy information](https://datasketches.apache.org/docs/Quantiles/ClassicQuantilesSketch.html) in the DataSketches documentation for how many bytes are required per stream length.
 This query context  parameter is a temporary solution to avoid the known issue. It may be removed in a future release after the bug is fixed.
 
 ## Unsupported features
@@ -822,7 +814,6 @@ Druid does not support all SQL features. In particular, the following features a
 - JOIN conditions that are not an equality between expressions from the left- and right-hand sides.
 - JOIN conditions containing a constant value inside the condition.
 - JOIN conditions on a column which contains a multi-value dimension.
-- OVER clauses, and analytic functions such as `LAG` and `LEAD`.
 - ORDER BY for a non-aggregating query, except for `ORDER BY __time` or `ORDER BY __time DESC`, which are supported.
   This restriction only applies to non-aggregating queries; you can ORDER BY any column in an aggregating query.
 - DDL and DML.

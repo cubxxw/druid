@@ -16,9 +16,8 @@
  * limitations under the License.
  */
 
-import { AnchorButton, Button, Intent, Menu, MenuItem, Position } from '@blueprintjs/core';
+import { AnchorButton, Button, Intent, Menu, MenuItem, Popover, Position } from '@blueprintjs/core';
 import { IconNames } from '@blueprintjs/icons';
-import { Popover2 } from '@blueprintjs/popover2';
 import React, { useState } from 'react';
 import ReactTable from 'react-table';
 
@@ -34,6 +33,8 @@ import {
   tickIcon,
   wait,
 } from '../../../utils';
+
+import './destination-pages-pane.scss';
 
 type ResultFormat = 'object' | 'array' | 'objectLines' | 'arrayLines' | 'csv';
 
@@ -80,34 +81,37 @@ export const DestinationPagesPane = React.memo(function DestinationPagesPane(
 
   const numTotalRows = destination?.numTotalRows;
 
-  function getPageUrl(pageIndex: number) {
+  function getResultUrl(pageIndex: number) {
     return UrlBaser.base(
-      `/druid/v2/sql/statements/${id}/results?page=${pageIndex}&resultFormat=${desiredResultFormat}`,
+      `/druid/v2/sql/statements/${id}/results?${
+        pageIndex < 0 ? '' : `page=${pageIndex}&`
+      }resultFormat=${desiredResultFormat}`,
     );
   }
 
-  function getPageFilename(pageIndex: number) {
-    return `${id}_page${pageIndex}.${desiredExtension}`;
+  function getPageFilename(pageIndex: number, numPages: number) {
+    const numPagesString = String(numPages);
+    const pageNumberString = String(pageIndex + 1).padStart(numPagesString.length, '0');
+    return `${id}_page_${pageNumberString}_of_${numPagesString}.${desiredExtension}`;
   }
 
-  async function downloadAllPages() {
+  async function downloadAllData() {
     if (!pages) return;
-    for (let i = 0; i < pages.length; i++) {
-      downloadUrl(getPageUrl(i), getPageFilename(i));
-      await wait(100);
-    }
+    downloadUrl(getResultUrl(-1), `${id}_all_data.${desiredExtension}`);
+    await wait(100);
   }
 
+  const numPages = pages.length;
   return (
-    <div className="execution-details-pane">
+    <div className="destination-pages-pane">
       <p>
         {`${
           typeof numTotalRows === 'number' ? pluralIfNeeded(numTotalRows, 'row') : 'Results'
-        } have been written to ${pluralIfNeeded(pages.length, 'page')}. `}
+        } have been written to ${pluralIfNeeded(numPages, 'page')}. `}
       </p>
       <p>
         Format when downloading:{' '}
-        <Popover2
+        <Popover
           minimal
           position={Position.BOTTOM_LEFT}
           content={
@@ -128,13 +132,13 @@ export const DestinationPagesPane = React.memo(function DestinationPagesPane(
             text={RESULT_FORMAT_LABEL[desiredResultFormat]}
             rightIcon={IconNames.CARET_DOWN}
           />
-        </Popover2>{' '}
+        </Popover>{' '}
         {pages.length > 1 && (
           <Button
             intent={Intent.PRIMARY}
             icon={IconNames.DOWNLOAD}
-            text={`Download all data (${pluralIfNeeded(pages.length, 'file')})`}
-            onClick={() => void downloadAllPages()}
+            text="Download all data (concatenated)"
+            onClick={() => void downloadAllData()}
           />
         )}
       </p>
@@ -142,11 +146,11 @@ export const DestinationPagesPane = React.memo(function DestinationPagesPane(
         data={pages}
         loading={false}
         sortable={false}
-        defaultPageSize={clamp(pages.length, 1, SMALL_TABLE_PAGE_SIZE)}
-        showPagination={pages.length > SMALL_TABLE_PAGE_SIZE}
+        defaultPageSize={clamp(numPages, 1, SMALL_TABLE_PAGE_SIZE)}
+        showPagination={numPages > SMALL_TABLE_PAGE_SIZE}
         columns={[
           {
-            Header: 'Page number',
+            Header: 'Page ID',
             id: 'id',
             accessor: 'id',
             className: 'padded',
@@ -172,14 +176,15 @@ export const DestinationPagesPane = React.memo(function DestinationPagesPane(
             Header: '',
             id: 'download',
             accessor: 'id',
-            width: 300,
+            width: 130,
             Cell: ({ value }) => (
               <AnchorButton
+                className="download-button"
                 icon={IconNames.DOWNLOAD}
                 text="Download"
                 minimal
-                href={getPageUrl(value)}
-                download={getPageFilename(value)}
+                href={getResultUrl(value)}
+                download={getPageFilename(value, numPages)}
               />
             ),
           },

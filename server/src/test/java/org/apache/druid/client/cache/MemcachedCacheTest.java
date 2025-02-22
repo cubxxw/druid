@@ -80,7 +80,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  */
-public class MemcachedCacheTest
+public class MemcachedCacheTest extends CacheTestBase<MemcachedCache>
 {
   private static final Logger log = new Logger(MemcachedCacheTest.class);
   private static final byte[] HI = StringUtils.toUtf8("hiiiiiiiiiiiiiiiiiii");
@@ -93,7 +93,7 @@ public class MemcachedCacheTest
       return false;
     }
   };
-  private MemcachedCache cache;
+
   private final MemcachedCacheConfig memcachedCacheConfig = new MemcachedCacheConfig()
   {
     @Override
@@ -254,6 +254,8 @@ public class MemcachedCacheTest
     Assert.assertEquals(connectionFactoryDynamic.getClientMode(), ClientMode.Dynamic);
     //enableTls is true so sslContext is not null
     Assert.assertNotNull(connectionFactoryDynamic.getSSLContext());
+    // Ensure Protocol is TLSv1.2
+    Assert.assertEquals("TLSv1.2", connectionFactoryDynamic.getSSLContext().getProtocol());
   }
 
   @Test
@@ -350,7 +352,7 @@ class MemcachedProviderWithConfig extends MemcachedCacheProvider
 
 class MockMemcachedClient implements MemcachedClientIF
 {
-  private final ConcurrentMap<String, CachedData> theMap = new ConcurrentHashMap<String, CachedData>();
+  private final ConcurrentMap<String, CachedData> theMap = new ConcurrentHashMap<>();
   private final SerializingTranscoder transcoder;
 
   public MockMemcachedClient()
@@ -502,7 +504,7 @@ class MockMemcachedClient implements MemcachedClientIF
   {
     theMap.put(key, tc.encode(o));
 
-    return new Future<Boolean>()
+    return new Future<>()
     {
       @Override
       public boolean cancel(boolean b)
@@ -560,7 +562,7 @@ class MockMemcachedClient implements MemcachedClientIF
     CachedData data = theMap.get(key);
     final T theValue = data != null ? tc.decode(data) : null;
 
-    return new Future<T>()
+    return new Future<>()
     {
       @Override
       public boolean cancel(boolean b)
@@ -676,7 +678,7 @@ class MockMemcachedClient implements MemcachedClientIF
   @Override
   public <T> BulkFuture<Map<String, T>> asyncGetBulk(final Iterator<String> keys, final Transcoder<T> tc)
   {
-    return new BulkFuture<Map<String, T>>()
+    return new BulkFuture<>()
     {
       @Override
       public boolean isTimeout()

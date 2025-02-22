@@ -28,7 +28,6 @@ import org.apache.druid.client.cache.CacheConfig;
 import org.apache.druid.client.cache.CachePopulator;
 import org.apache.druid.guice.annotations.Smile;
 import org.apache.druid.java.util.common.ISE;
-import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.guava.FunctionalIterable;
 import org.apache.druid.java.util.emitter.EmittingLogger;
@@ -59,14 +58,15 @@ import org.apache.druid.query.spec.SpecificSegmentQueryRunner;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.ReferenceCountingSegment;
 import org.apache.druid.segment.SegmentReference;
-import org.apache.druid.segment.StorageAdapter;
-import org.apache.druid.segment.join.JoinableFactoryWrapper;
+import org.apache.druid.segment.TimeBoundaryInspector;
+import org.apache.druid.server.ResourceIdPopulatingQueryRunner;
 import org.apache.druid.server.SegmentManager;
 import org.apache.druid.server.SetAndVerifyContextQueryRunner;
 import org.apache.druid.server.initialization.ServerConfig;
 import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.timeline.VersionedIntervalTimeline;
 import org.apache.druid.timeline.partition.PartitionChunk;
+import org.apache.druid.utils.JvmUtils;
 import org.joda.time.Interval;
 
 import java.util.Collections;
@@ -90,7 +90,6 @@ public class ServerManager implements QuerySegmentWalker
   private final ObjectMapper objectMapper;
   private final CacheConfig cacheConfig;
   private final SegmentManager segmentManager;
-  private final JoinableFactoryWrapper joinableFactoryWrapper;
   private final ServerConfig serverConfig;
 
   @Inject
@@ -103,7 +102,6 @@ public class ServerManager implements QuerySegmentWalker
       Cache cache,
       CacheConfig cacheConfig,
       SegmentManager segmentManager,
-      JoinableFactoryWrapper joinableFactoryWrapper,
       ServerConfig serverConfig
   )
   {
@@ -117,22 +115,21 @@ public class ServerManager implements QuerySegmentWalker
 
     this.cacheConfig = cacheConfig;
     this.segmentManager = segmentManager;
-    this.joinableFactoryWrapper = joinableFactoryWrapper;
     this.serverConfig = serverConfig;
   }
 
   @Override
   public <T> QueryRunner<T> getQueryRunnerForIntervals(Query<T> query, Iterable<Interval> intervals)
   {
-    final DataSourceAnalysis analysis = query.getDataSource().getAnalysis();
+    final DataSourceAnalysis analysis = query.getDataSourceAnalysis();
     final VersionedIntervalTimeline<String, ReferenceCountingSegment> timeline;
     final Optional<VersionedIntervalTimeline<String, ReferenceCountingSegment>> maybeTimeline =
-        segmentManager.getTimeline(analysis);
+        segmentManager.getTimeline(analysis.getBaseTableDataSource());
 
     if (maybeTimeline.isPresent()) {
       timeline = maybeTimeline.get();
     } else {
-      // Even though we didn't find a timeline for the query datasource, we simply returns a noopQueryRunner
+      // Even though we didn't find a timeline for the query datasource, we simply return a NoopQueryRunner
       // instead of reporting missing intervals because the query intervals are a filter rather than something
       // we must find.
       return new NoopQueryRunner<>();
@@ -164,27 +161,28 @@ public class ServerManager implements QuerySegmentWalker
   }
 
   @Override
-  public <T> QueryRunner<T> getQueryRunnerForSegments(Query<T> query, Iterable<SegmentDescriptor> specs)
+  public <T> QueryRunner<T> getQueryRunnerForSegments(Query<T> theQuery, Iterable<SegmentDescriptor> specs)
   {
-    final DataSource dataSourceFromQuery = query.getDataSource();
-    final QueryRunnerFactory<T, Query<T>> factory = conglomerate.findFactory(query);
+    final Query<T> newQuery = ResourceIdPopulatingQueryRunner.populateResourceId(theQuery);
+    final DataSource dataSourceFromQuery = newQuery.getDataSource();
+    final QueryRunnerFactory<T, Query<T>> factory = conglomerate.findFactory(newQuery);
     if (factory == null) {
       final QueryUnsupportedException e = new QueryUnsupportedException(
-          StringUtils.format("Unknown query type, [%s]", query.getClass())
+          StringUtils.format("Unknown query type, [%s]", newQuery.getClass())
       );
-      log.makeAlert(e, "Error while executing a query[%s]", query.getId())
+      log.makeAlert(e, "Error while executing a query[%s]", newQuery.getId())
          .addData("dataSource", dataSourceFromQuery)
          .emit();
       throw e;
     }
 
     final QueryToolChest<T, Query<T>> toolChest = factory.getToolchest();
-    final DataSourceAnalysis analysis = dataSourceFromQuery.getAnalysis();
+    final DataSourceAnalysis analysis = newQuery.getDataSourceAnalysis();
     final AtomicLong cpuTimeAccumulator = new AtomicLong(0L);
 
     final VersionedIntervalTimeline<String, ReferenceCountingSegment> timeline;
     final Optional<VersionedIntervalTimeline<String, ReferenceCountingSegment>> maybeTimeline =
-        segmentManager.getTimeline(analysis);
+        segmentManager.getTimeline(analysis.getBaseTableDataSource());
 
     // Make sure this query type can handle the subquery, if present.
     if ((dataSourceFromQuery instanceof QueryDataSource)
@@ -197,9 +195,10 @@ public class ServerManager implements QuerySegmentWalker
     } else {
       return new ReportTimelineMissingSegmentQueryRunner<>(Lists.newArrayList(specs));
     }
-    final Function<SegmentReference, SegmentReference> segmentMapFn =
-        dataSourceFromQuery
-             .createSegmentMapFunction(query, cpuTimeAccumulator);
+    final Function<SegmentReference, SegmentReference> segmentMapFn = JvmUtils.safeAccumulateThreadCpuTime(
+        cpuTimeAccumulator,
+        () -> dataSourceFromQuery.createSegmentMapFunction(newQuery)
+    );
 
     // We compute the datasource's cache key here itself so it doesn't need to be re-computed for every segment
     final Optional<byte[]> cacheKeyPrefix = Optional.ofNullable(dataSourceFromQuery.getCacheKey());
@@ -209,7 +208,7 @@ public class ServerManager implements QuerySegmentWalker
         .transformCat(
             descriptor -> Collections.singletonList(
                 buildQueryRunnerForSegment(
-                    query,
+                    newQuery,
                     descriptor,
                     factory,
                     toolChest,
@@ -221,15 +220,17 @@ public class ServerManager implements QuerySegmentWalker
             )
         );
 
-    return CPUTimeMetricQueryRunner.safeBuild(
-        new FinalizeResultsQueryRunner<>(
-            toolChest.mergeResults(factory.mergeRunners(queryProcessingPool, queryRunners)),
-            toolChest
-        ),
-        toolChest,
-        emitter,
-        cpuTimeAccumulator,
-        true
+    return new ResourceIdPopulatingQueryRunner<>(
+        CPUTimeMetricQueryRunner.safeBuild(
+            new FinalizeResultsQueryRunner<>(
+                toolChest.mergeResults(factory.mergeRunners(queryProcessingPool, queryRunners), true),
+                toolChest
+            ),
+            toolChest,
+            emitter,
+            cpuTimeAccumulator,
+            true
+        )
     );
   }
 
@@ -274,8 +275,11 @@ public class ServerManager implements QuerySegmentWalker
       final AtomicLong cpuTimeAccumulator
   )
   {
-
-
+    // Short-circuit when the index comes from a tombstone (it has no data by definition),
+    // check for null also since no all segments (higher level ones) will have QueryableIndex...
+    if (segment.isTombstone()) {
+      return new NoopQueryRunner<>();
+    }
 
     final SpecificSegmentSpec segmentSpec = new SpecificSegmentSpec(segmentDescriptor);
     final SegmentId segmentId = segment.getId();
@@ -287,12 +291,6 @@ public class ServerManager implements QuerySegmentWalker
       return new ReportTimelineMissingSegmentQueryRunner<>(segmentDescriptor);
     }
 
-    StorageAdapter storageAdapter = segment.asStorageAdapter();
-    // Short-circuit when the index comes from a tombstone (it has no data by definition),
-    // check for null also since no all segments (higher level ones) will have QueryableIndex...
-    if (storageAdapter.isFromTombstone()) {
-      return new NoopQueryRunner<>();
-    }
     String segmentIdString = segmentId.toString();
 
     MetricsEmittingQueryRunner<T> metricsEmittingQueryRunnerInner = new MetricsEmittingQueryRunner<>(
@@ -303,14 +301,14 @@ public class ServerManager implements QuerySegmentWalker
         queryMetrics -> queryMetrics.segment(segmentIdString)
     );
 
-    long segmentMaxTime = storageAdapter.getMaxTime().getMillis();
-    long segmentMinTime = storageAdapter.getMinTime().getMillis();
-    Interval actualDataInterval = Intervals.utc(segmentMinTime, segmentMaxTime + 1);
+    final TimeBoundaryInspector timeBoundaryInspector = segment.as(TimeBoundaryInspector.class);
+    final Interval cacheKeyInterval =
+        timeBoundaryInspector != null ? timeBoundaryInspector.getMinMaxInterval() : segmentInterval;
     CachingQueryRunner<T> cachingQueryRunner = new CachingQueryRunner<>(
         segmentIdString,
         cacheKeyPrefix,
         segmentDescriptor,
-        actualDataInterval,
+        cacheKeyInterval,
         objectMapper,
         cache,
         toolChest,

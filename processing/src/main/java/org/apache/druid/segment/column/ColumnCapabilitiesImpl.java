@@ -23,13 +23,13 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import com.google.common.base.Preconditions;
-import org.apache.druid.common.config.NullHandling;
 
 import javax.annotation.Nullable;
 
 /**
  *
  */
+@SuppressWarnings("Immutable")
 public class ColumnCapabilitiesImpl implements ColumnCapabilities
 {
   public static final CoercionLogic ALL_FALSE = new CoercionLogic()
@@ -124,9 +124,6 @@ public class ColumnCapabilitiesImpl implements ColumnCapabilities
                                                                  .setDictionaryValuesSorted(false)
                                                                  .setDictionaryValuesUnique(false)
                                                                  .setHasSpatialIndexes(false);
-    if (NullHandling.replaceWithDefault()) {
-      builder.setHasNulls(false);
-    }
     return builder;
   }
 

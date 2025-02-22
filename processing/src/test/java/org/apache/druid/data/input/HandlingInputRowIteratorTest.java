@@ -25,8 +25,6 @@ import org.apache.druid.java.util.common.parsers.CloseableIterator;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.junit.experimental.runners.Enclosed;
-import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 
 import javax.annotation.Nullable;
@@ -41,13 +39,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-@RunWith(Enclosed.class)
 public class HandlingInputRowIteratorTest
 {
   public static class AbsentRowTest
   {
     private static final CloseableIterator<InputRow> EMPTY_ITERATOR = CloseableIterators.withEmptyBaggage(
-        new Iterator<InputRow>()
+        new Iterator<>()
         {
           @Override
           public boolean hasNext()
@@ -146,7 +143,7 @@ public class HandlingInputRowIteratorTest
         HandlingInputRowIterator.InputRowHandler secondHandler)
     {
       CloseableIterator<InputRow> iterator = CloseableIterators.withEmptyBaggage(
-          new Iterator<InputRow>()
+          new Iterator<>()
           {
             private final Iterator<InputRow> delegate = INPUT_ROWS.iterator();
 

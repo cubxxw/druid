@@ -22,11 +22,17 @@ package org.apache.druid.timeline;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.druid.data.input.impl.DimensionsSpec;
+import org.apache.druid.indexer.granularity.GranularitySpec;
 import org.apache.druid.indexer.partitions.PartitionsSpec;
+import org.apache.druid.query.aggregation.AggregatorFactory;
+import org.apache.druid.segment.IndexSpec;
+import org.apache.druid.segment.transform.CompactionTransformSpec;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * This class describes what compaction task spec was used to create a given segment.
@@ -43,27 +49,19 @@ public class CompactionState
 {
   private final PartitionsSpec partitionsSpec;
   private final DimensionsSpec dimensionsSpec;
-  // org.apache.druid.segment.transform.TransformSpec cannot be used here because it's in the 'processing' module which
-  // has a dependency on the 'core' module where this class is.
-  private final Map<String, Object> transformSpec;
-  // org.apache.druid.segment.IndexSpec cannot be used here because it's in the 'processing' module which
-  // has a dependency on the 'core' module where this class is.
-  private final Map<String, Object> indexSpec;
-  // org.apache.druid.segment.indexing.granularity.GranularitySpec cannot be used here because it's in the
-  // 'server' module which has a dependency on the 'core' module where this class is.
-  private final Map<String, Object> granularitySpec;
-  // org.apache.druid.query.aggregation.AggregatorFactory cannot be used here because it's in the 'processing' module which
-  // has a dependency on the 'core' module where this class is.
-  private final List<Object> metricsSpec;
+  private final CompactionTransformSpec transformSpec;
+  private final IndexSpec indexSpec;
+  private final GranularitySpec granularitySpec;
+  private final List<AggregatorFactory> metricsSpec;
 
   @JsonCreator
   public CompactionState(
       @JsonProperty("partitionsSpec") PartitionsSpec partitionsSpec,
       @JsonProperty("dimensionsSpec") DimensionsSpec dimensionsSpec,
-      @JsonProperty("metricsSpec") List<Object> metricsSpec,
-      @JsonProperty("transformSpec") Map<String, Object> transformSpec,
-      @JsonProperty("indexSpec") Map<String, Object> indexSpec,
-      @JsonProperty("granularitySpec") Map<String, Object> granularitySpec
+      @JsonProperty("metricsSpec") List<AggregatorFactory> metricsSpec,
+      @JsonProperty("transformSpec") CompactionTransformSpec transformSpec,
+      @JsonProperty("indexSpec") IndexSpec indexSpec,
+      @JsonProperty("granularitySpec") GranularitySpec granularitySpec
   )
   {
     this.partitionsSpec = partitionsSpec;
@@ -87,25 +85,25 @@ public class CompactionState
   }
 
   @JsonProperty
-  public List<Object> getMetricsSpec()
+  public List<AggregatorFactory> getMetricsSpec()
   {
     return metricsSpec;
   }
 
   @JsonProperty
-  public Map<String, Object> getTransformSpec()
+  public CompactionTransformSpec getTransformSpec()
   {
     return transformSpec;
   }
 
   @JsonProperty
-  public Map<String, Object> getIndexSpec()
+  public IndexSpec getIndexSpec()
   {
     return indexSpec;
   }
 
   @JsonProperty
-  public Map<String, Object> getGranularitySpec()
+  public GranularitySpec getGranularitySpec()
   {
     return granularitySpec;
   }
@@ -145,5 +143,29 @@ public class CompactionState
            ", granularitySpec=" + granularitySpec +
            ", metricsSpec=" + metricsSpec +
            '}';
+  }
+
+  public static Function<Set<DataSegment>, Set<DataSegment>> addCompactionStateToSegments(
+      PartitionsSpec partitionsSpec,
+      DimensionsSpec dimensionsSpec,
+      List<AggregatorFactory> metricsSpec,
+      CompactionTransformSpec transformSpec,
+      IndexSpec indexSpec,
+      GranularitySpec granularitySpec
+  )
+  {
+    CompactionState compactionState = new CompactionState(
+        partitionsSpec,
+        dimensionsSpec,
+        metricsSpec,
+        transformSpec,
+        indexSpec,
+        granularitySpec
+    );
+
+    return segments -> segments
+        .stream()
+        .map(s -> s.withLastCompactionState(compactionState))
+        .collect(Collectors.toSet());
   }
 }

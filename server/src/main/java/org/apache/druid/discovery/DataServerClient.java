@@ -35,7 +35,7 @@ import org.apache.druid.java.util.http.client.response.StatusResponseHandler;
 import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.context.ResponseContext;
-import org.apache.druid.rpc.FixedSetServiceLocator;
+import org.apache.druid.rpc.FixedServiceLocator;
 import org.apache.druid.rpc.RequestBuilder;
 import org.apache.druid.rpc.ServiceClient;
 import org.apache.druid.rpc.ServiceClientFactory;
@@ -71,7 +71,7 @@ public class DataServerClient
   {
     this.serviceClient = serviceClientFactory.makeClient(
         serviceLocation.getHost(),
-        FixedSetServiceLocator.forServiceLocation(serviceLocation),
+        new FixedServiceLocator(serviceLocation),
         StandardRetryPolicy.noRetries()
     );
     this.serviceLocation = serviceLocation;
@@ -91,7 +91,9 @@ public class DataServerClient
       requestBuilder = requestBuilder.jsonContent(objectMapper, query);
     }
 
-    log.debug("Sending request to servers for query[%s], request[%s]", query.getId(), requestBuilder.toString());
+    if (log.isDebugEnabled()) {
+      log.debug("Sending request to servers for query[%s], request[%s]", query.getId(), requestBuilder);
+    }
     ListenableFuture<InputStream> resultStreamFuture = serviceClient.asyncRequest(
         requestBuilder,
         new DataServerResponseHandler(query, responseContext, objectMapper)
@@ -100,7 +102,7 @@ public class DataServerClient
     closer.register(() -> resultStreamFuture.cancel(true));
     Futures.addCallback(
         resultStreamFuture,
-        new FutureCallback<InputStream>()
+        new FutureCallback<>()
         {
           @Override
           public void onSuccess(InputStream result)

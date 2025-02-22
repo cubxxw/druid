@@ -29,7 +29,6 @@ import com.google.common.base.Strings;
 import com.google.common.net.HostAndPort;
 import com.google.inject.Inject;
 import com.sun.jersey.spi.container.ResourceFilters;
-import org.apache.druid.common.utils.ServletResourceUtils;
 import org.apache.druid.guice.annotations.Json;
 import org.apache.druid.guice.annotations.Smile;
 import org.apache.druid.java.util.common.IAE;
@@ -155,9 +154,7 @@ public class LookupCoordinatorResource
       final ObjectMapper mapper = isSmile ? smileMapper : jsonMapper;
       final Map<String, Map<String, LookupExtractorFactoryMapContainer>> map;
       try {
-        map = mapper.readValue(in, new TypeReference<Map<String, Map<String, LookupExtractorFactoryMapContainer>>>()
-        {
-        });
+        map = mapper.readValue(in, new TypeReference<>() {});
       }
       catch (IOException e) {
         return Response.status(Response.Status.BAD_REQUEST).entity(ServletResourceUtils.sanitizeException(e)).build();

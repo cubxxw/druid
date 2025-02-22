@@ -21,19 +21,10 @@ package org.apache.druid.msq.input.table;
 
 import com.google.common.base.Preconditions;
 import org.apache.druid.collections.ResourceHolder;
-import org.apache.druid.error.DruidException;
-import org.apache.druid.java.util.common.Pair;
-import org.apache.druid.java.util.common.guava.Sequence;
-import org.apache.druid.java.util.common.guava.Yielder;
-import org.apache.druid.java.util.common.io.Closer;
-import org.apache.druid.msq.exec.LoadedSegmentDataProvider;
-import org.apache.druid.query.Query;
+import org.apache.druid.segment.CompleteSegment;
 import org.apache.druid.segment.Segment;
 
-import javax.annotation.Nullable;
-import java.io.IOException;
 import java.util.Objects;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -41,9 +32,7 @@ import java.util.function.Supplier;
  */
 public class SegmentWithDescriptor
 {
-  private final Supplier<? extends ResourceHolder<Segment>> segmentSupplier;
-  @Nullable
-  private final LoadedSegmentDataProvider loadedSegmentDataProvider;
+  private final Supplier<? extends ResourceHolder<CompleteSegment>> segmentSupplier;
   private final RichSegmentDescriptor descriptor;
 
   /**
@@ -51,18 +40,14 @@ public class SegmentWithDescriptor
    *
    * @param segmentSupplier           supplier of a {@link ResourceHolder} of segment. The {@link ResourceHolder#close()}
    *                                  logic must include a delegated call to {@link Segment#close()}.
-   * @param loadedSegmentDataProvider {@link LoadedSegmentDataProvider} which fetches the corresponding results from a
-   *                                  data server where the segment is loaded. The call will fetch the
    * @param descriptor                segment descriptor
    */
   public SegmentWithDescriptor(
-      final Supplier<? extends ResourceHolder<Segment>> segmentSupplier,
-      final @Nullable LoadedSegmentDataProvider loadedSegmentDataProvider,
+      final Supplier<? extends ResourceHolder<CompleteSegment>> segmentSupplier,
       final RichSegmentDescriptor descriptor
   )
   {
     this.segmentSupplier = Preconditions.checkNotNull(segmentSupplier, "segment");
-    this.loadedSegmentDataProvider = loadedSegmentDataProvider;
     this.descriptor = Preconditions.checkNotNull(descriptor, "descriptor");
   }
 
@@ -75,22 +60,9 @@ public class SegmentWithDescriptor
    * It is not necessary to call {@link Segment#close()} on the returned segment. Calling {@link ResourceHolder#close()}
    * is enough.
    */
-  public ResourceHolder<Segment> getOrLoad()
+  public ResourceHolder<CompleteSegment> getOrLoad()
   {
     return segmentSupplier.get();
-  }
-
-  public <QueryType, RowType> Pair<LoadedSegmentDataProvider.DataServerQueryStatus, Yielder<RowType>> fetchRowsFromDataServer(
-      Query<QueryType> query,
-      Function<Sequence<QueryType>, Sequence<RowType>> mappingFunction,
-      Closer closer
-  ) throws IOException
-  {
-    if (loadedSegmentDataProvider == null) {
-      throw DruidException.defensive("loadedSegmentDataProvider was null. Fetching segments from servers is not "
-                                     + "supported for segment[%s]", descriptor);
-    }
-    return loadedSegmentDataProvider.fetchRowsFromDataServer(query, descriptor, mappingFunction, closer);
   }
 
   /**

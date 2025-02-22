@@ -44,18 +44,13 @@ public final class Intervals
       return new Interval(interval, ISOChronology.getInstanceUTC());
     }
     catch (IllegalArgumentException e) {
-      throw InvalidInput.exception(e, "Bad Interval[%s]: [%s]", interval, e.getMessage());
+      throw InvalidInput.exception(e, "Invalid interval[%s]: [%s]", interval, e.getMessage());
     }
   }
 
   public static Interval of(String format, Object... formatArgs)
   {
     return of(StringUtils.format(format, formatArgs));
-  }
-
-  public static boolean isEmpty(Interval interval)
-  {
-    return interval.getStart().equals(interval.getEnd());
   }
 
   /**

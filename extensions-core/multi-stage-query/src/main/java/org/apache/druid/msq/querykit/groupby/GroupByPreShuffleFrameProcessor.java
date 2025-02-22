@@ -20,6 +20,7 @@
 package org.apache.druid.msq.querykit.groupby;
 
 import com.google.common.collect.Iterables;
+import org.apache.druid.collections.NonBlockingPool;
 import org.apache.druid.collections.ResourceHolder;
 import org.apache.druid.frame.Frame;
 import org.apache.druid.frame.channel.FrameWithPartition;
@@ -33,16 +34,18 @@ import org.apache.druid.frame.segment.FrameSegment;
 import org.apache.druid.frame.write.FrameWriter;
 import org.apache.druid.frame.write.FrameWriterFactory;
 import org.apache.druid.java.util.common.Intervals;
-import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.Unit;
 import org.apache.druid.java.util.common.guava.Sequence;
+import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.java.util.common.guava.Yielder;
 import org.apache.druid.java.util.common.guava.Yielders;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.common.logger.Logger;
-import org.apache.druid.msq.exec.LoadedSegmentDataProvider;
+import org.apache.druid.msq.exec.DataServerQueryHandler;
+import org.apache.druid.msq.exec.DataServerQueryResult;
 import org.apache.druid.msq.input.ReadableInput;
 import org.apache.druid.msq.input.table.SegmentWithDescriptor;
+import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.querykit.BaseLeafFrameProcessor;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.GroupingEngine;
@@ -51,12 +54,15 @@ import org.apache.druid.query.groupby.epinephelinae.RowBasedGrouperHelper;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.ColumnSelectorFactory;
-import org.apache.druid.segment.Segment;
+import org.apache.druid.segment.CompleteSegment;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.segment.TimeBoundaryInspector;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.timeline.SegmentId;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -68,16 +74,20 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   private static final Logger log = new Logger(GroupByPreShuffleFrameProcessor.class);
   private final GroupByQuery query;
   private final GroupingEngine groupingEngine;
+  private final NonBlockingPool<ByteBuffer> bufferPool;
   private final ColumnSelectorFactory frameWriterColumnSelectorFactory;
   private final Closer closer = Closer.create();
 
   private Yielder<ResultRow> resultYielder;
   private FrameWriter frameWriter;
   private long currentAllocatorCapacity; // Used for generating FrameRowTooLargeException if needed
+  private SegmentsInputSlice handedOffSegments = null;
+  private Yielder<Yielder<ResultRow>> currentResultsYielder;
 
   public GroupByPreShuffleFrameProcessor(
       final GroupByQuery query,
       final GroupingEngine groupingEngine,
+      final NonBlockingPool<ByteBuffer> bufferPool,
       final ReadableInput baseInput,
       final Function<SegmentReference, SegmentReference> segmentMapFn,
       final ResourceHolder<WritableFrameChannel> outputChannelHolder,
@@ -92,6 +102,7 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
     );
     this.query = query;
     this.groupingEngine = groupingEngine;
+    this.bufferPool = bufferPool;
     this.frameWriterColumnSelectorFactory = RowBasedGrouperHelper.createResultRowBasedColumnSelectorFactory(
         query,
         () -> resultYielder.get(),
@@ -100,23 +111,38 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   }
 
   @Override
-  protected ReturnOrAwait<Unit> runWithLoadedSegment(SegmentWithDescriptor segment) throws IOException
+  protected ReturnOrAwait<SegmentsInputSlice> runWithDataServerQuery(DataServerQueryHandler dataServerQueryHandler) throws IOException
   {
-    if (resultYielder == null) {
-      Pair<LoadedSegmentDataProvider.DataServerQueryStatus, Yielder<ResultRow>> statusSequencePair =
-          segment.fetchRowsFromDataServer(groupingEngine.prepareGroupByQuery(query), Function.identity(), closer);
-      if (LoadedSegmentDataProvider.DataServerQueryStatus.HANDOFF.equals(statusSequencePair.lhs)) {
-        log.info("Segment[%s] was handed off, falling back to fetching the segment from deep storage.",
-                 segment.getDescriptor());
-        return runWithSegment(segment);
+    if (resultYielder == null || resultYielder.isDone()) {
+      if (currentResultsYielder == null) {
+        final DataServerQueryResult<ResultRow> dataServerQueryResult =
+            dataServerQueryHandler.fetchRowsFromDataServer(
+                groupingEngine.prepareGroupByQuery(query),
+                Function.identity(),
+                closer
+            );
+        handedOffSegments = dataServerQueryResult.getHandedOffSegments();
+        if (!handedOffSegments.getDescriptors().isEmpty()) {
+          log.info(
+              "Query to dataserver for segments found [%d] handed off segments",
+              handedOffSegments.getDescriptors().size()
+          );
+        }
+        List<Yielder<ResultRow>> yielders = dataServerQueryResult.getResultsYielders();
+        currentResultsYielder = Yielders.each(Sequences.simple(yielders));
       }
-      resultYielder = statusSequencePair.rhs;
+      if (currentResultsYielder.isDone()) {
+        return ReturnOrAwait.returnObject(handedOffSegments);
+      } else {
+        resultYielder = currentResultsYielder.get();
+        currentResultsYielder = currentResultsYielder.next(null);
+      }
     }
 
     populateFrameWriterAndFlushIfNeeded();
 
-    if (resultYielder == null || resultYielder.isDone()) {
-      return ReturnOrAwait.returnObject(Unit.instance());
+    if ((resultYielder == null || resultYielder.isDone()) && currentResultsYielder.isDone()) {
+      return ReturnOrAwait.returnObject(handedOffSegments);
     } else {
       return ReturnOrAwait.runAgain();
     }
@@ -126,12 +152,15 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
   protected ReturnOrAwait<Unit> runWithSegment(final SegmentWithDescriptor segment) throws IOException
   {
     if (resultYielder == null) {
-      final ResourceHolder<Segment> segmentHolder = closer.register(segment.getOrLoad());
+      final ResourceHolder<CompleteSegment> segmentHolder = closer.register(segment.getOrLoad());
+      final SegmentReference mappedSegment = mapSegment(segmentHolder.get().getSegment());
 
       final Sequence<ResultRow> rowSequence =
           groupingEngine.process(
               query.withQuerySegmentSpec(new SpecificSegmentSpec(segment.getDescriptor())),
-              mapSegment(segmentHolder.get()).asStorageAdapter(),
+              mappedSegment.asCursorFactory(),
+              mappedSegment.as(TimeBoundaryInspector.class),
+              bufferPool,
               null
           );
 
@@ -159,11 +188,14 @@ public class GroupByPreShuffleFrameProcessor extends BaseLeafFrameProcessor
       if (inputChannel.canRead()) {
         final Frame frame = inputChannel.read();
         final FrameSegment frameSegment = new FrameSegment(frame, inputFrameReader, SegmentId.dummy("x"));
+        final SegmentReference mappedSegment = mapSegment(frameSegment);
 
         final Sequence<ResultRow> rowSequence =
             groupingEngine.process(
                 query.withQuerySegmentSpec(new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY)),
-                mapSegment(frameSegment).asStorageAdapter(),
+                mappedSegment.asCursorFactory(),
+                mappedSegment.as(TimeBoundaryInspector.class),
+                bufferPool,
                 null
             );
 

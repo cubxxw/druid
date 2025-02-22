@@ -23,7 +23,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.data.input.MapBasedRow;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.DateTimes;
@@ -57,10 +56,6 @@ import java.util.stream.Collectors;
 
 public class MaterializedViewQueryQueryToolChestTest extends InitializedNullHandlingTest
 {
-  static {
-    NullHandling.initializeForTests();
-  }
-
   private static final ObjectMapper JSON_MAPPER = new DefaultObjectMapper();
 
   @Test
@@ -127,7 +122,7 @@ public class MaterializedViewQueryQueryToolChestTest extends InitializedNullHand
     QueryToolChest queryToolChest =
         new MaterializedViewQueryQueryToolChest(new MapQueryToolChestWarehouse(
             ImmutableMap.<Class<? extends Query>, QueryToolChest>builder()
-                .put(GroupByQuery.class, new GroupByQueryQueryToolChest(null))
+                .put(GroupByQuery.class, new GroupByQueryQueryToolChest(null, null))
                 .build()
         ));
 
@@ -186,7 +181,7 @@ public class MaterializedViewQueryQueryToolChestTest extends InitializedNullHand
     QueryToolChest materializedViewQueryQueryToolChest =
         new MaterializedViewQueryQueryToolChest(new MapQueryToolChestWarehouse(
             ImmutableMap.<Class<? extends Query>, QueryToolChest>builder()
-                .put(GroupByQuery.class, new GroupByQueryQueryToolChest(null))
+                .put(GroupByQuery.class, new GroupByQueryQueryToolChest(null, null))
                 .build()
         ));
 
@@ -245,7 +240,7 @@ public class MaterializedViewQueryQueryToolChestTest extends InitializedNullHand
     MaterializedViewQueryQueryToolChest materializedViewQueryQueryToolChest =
         new MaterializedViewQueryQueryToolChest(new MapQueryToolChestWarehouse(
             ImmutableMap.<Class<? extends Query>, QueryToolChest>builder()
-                .put(GroupByQuery.class, new GroupByQueryQueryToolChest(null))
+                .put(GroupByQuery.class, new GroupByQueryQueryToolChest(null, null))
                 .build()
         ));
 

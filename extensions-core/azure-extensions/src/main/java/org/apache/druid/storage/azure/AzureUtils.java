@@ -37,10 +37,10 @@ import java.util.concurrent.TimeoutException;
  */
 public class AzureUtils
 {
-
-  public static final String DEFAULT_AZURE_ENDPOINT_SUFFIX = "core.windows.net";
   @VisibleForTesting
   static final String AZURE_STORAGE_HOST_ADDRESS = "blob.core.windows.net";
+
+  static final String BLOB = "blob";
 
   // The azure storage hadoop access pattern is:
   // wasb[s]://<containername>@<accountname>.blob.<endpointSuffix>/<path>

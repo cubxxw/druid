@@ -131,7 +131,8 @@ public class DruidQueryRel extends DruidRel<DruidQueryRel>
         druidTable.getRowSignature(),
         getPlannerContext(),
         getCluster().getRexBuilder(),
-        finalizeAggregations
+        finalizeAggregations,
+        false
     );
   }
 
@@ -171,7 +172,7 @@ public class DruidQueryRel extends DruidRel<DruidQueryRel>
   {
     return new DruidQueryRel(
         getCluster(),
-        newQueryBuilder.getTraitSet(getConvention()),
+        newQueryBuilder.getTraitSet(getConvention(), getPlannerContext()),
         table,
         druidTable,
         getPlannerContext(),

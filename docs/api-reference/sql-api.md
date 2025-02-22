@@ -44,7 +44,7 @@ Each query has an associated SQL query ID. You can set this ID manually using th
 
 #### URL
 
-<code class="postAPI">POST</code> <code>/druid/v2/sql</code>
+`POST` `/druid/v2/sql`
 
 #### Request body
 
@@ -53,11 +53,25 @@ The request body takes the following properties:
 * `query`: SQL query string.
 
 * `resultFormat`: String that indicates the format to return query results. Select one of the following formats:
-  * `object`: Returns a JSON array of JSON objects with the HTTP response header `Content-Type: application/json`.
-  * `array`: Returns a JSON array of JSON arrays with the HTTP response header `Content-Type: application/json`.
-  * `objectLines`: Returns newline-delimited JSON objects with a trailing blank line. Returns the HTTP response header `Content-Type: text/plain`.
-  * `arrayLines`: Returns newline-delimited JSON arrays with a trailing blank line. Returns the HTTP response header `Content-Type: text/plain`.
-  * `csv`: Returns a comma-separated values with one row per line and a trailing blank line. Returns the HTTP response header `Content-Type: text/csv`.
+  * `object`: Returns a JSON array of JSON objects with the HTTP response header `Content-Type: application/json`.  
+     Object field names match the columns returned by the SQL query in the same order as the SQL query.
+
+  * `array`: Returns a JSON array of JSON arrays with the HTTP response header `Content-Type: application/json`.  
+     Each inner array has elements matching the columns returned by the SQL query, in order.
+
+  * `objectLines`: Returns newline-delimited JSON objects with the HTTP response header `Content-Type: text/plain`.  
+     Newline separation facilitates parsing the entire response set as a stream if you don't have a streaming JSON parser.
+     This format includes a single trailing newline character so you can detect a truncated response.
+
+  * `arrayLines`: Returns newline-delimited JSON arrays with the HTTP response header `Content-Type: text/plain`.  
+     Newline separation facilitates parsing the entire response set as a stream if you don't have a streaming JSON parser.
+     This format includes a single trailing newline character so you can detect a truncated response.
+
+  * `csv`: Returns comma-separated values with one row per line. Sent with the HTTP response header `Content-Type: text/csv`.  
+     Druid uses double quotes to escape individual field values. For example, a value with a comma returns `"A,B"`.
+     If the field value contains a double quote character, Druid escapes it with a second double quote character.
+     For example, `foo"bar` becomes `foo""bar`.
+      This format includes a single trailing newline character so you can detect a truncated response.
 
 * `header`: Boolean value that determines whether to return information on column names. When set to `true`, Druid returns the column names as the first row of the results. To also get information on the column types, set `typesHeader` or `sqlTypesHeader` to `true`. For a comparative overview of data formats and configurations for the header, see the [Query output format](#query-output-format) table.
 
@@ -79,6 +93,10 @@ The request body takes the following properties:
         {
             "type": "VARCHAR",
             "value": "bar"
+        },
+        {
+            "type": "ARRAY",
+            "value": [-25.7, null, 36.85]
         }
     ]
     ```
@@ -124,6 +142,16 @@ The request body takes the following properties:
 </TabItem>
 </Tabs>
 
+#### Client-side error handling and truncated responses
+
+Druid reports errors that occur before the response body is sent as JSON with an HTTP 500 status code. The errors are reported using the same format as [native Druid query errors](../querying/querying.md#query-errors).
+If an error occurs while Druid is sending the response body, the server handling the request stops the response midstream and logs an error.
+
+This means that when you call the SQL API, you must properly handle response truncation.
+For  `object` and `array` formats, truncated responses are invalid JSON.
+For line-oriented formats, Druid includes a newline character as the final character of every complete response. Absence of a final newline character indicates a truncated response.
+
+If you detect a truncated response, treat it as an error.
 
 ---
 
@@ -174,7 +202,7 @@ Content-Length: 192
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
 ```json
 [
@@ -296,7 +324,7 @@ Cancellation requests require READ permission on all resources used in the SQL q
 
 #### URL
 
-<code class="deleteAPI">DELETE</code> <code>/druid/v2/sql/:sqlQueryId</code>
+`DELETE` `/druid/v2/sql/{sqlQueryId}`
 
 #### Responses
 
@@ -393,7 +421,7 @@ Note that at least part of a datasource must be available on a Historical proces
 
 #### URL
 
-<code class="postAPI">POST</code> <code>/druid/v2/sql/statements</code>
+`POST` `/druid/v2/sql/statements`
 
 #### Request body
 
@@ -481,7 +509,7 @@ Content-Length: 134
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
   ```json
 {
@@ -605,9 +633,20 @@ Retrieves information about the query associated with the given query ID. The re
   - `sizeInBytes`: the size of the page.
   - `id`: the page number that you can use to reference a specific page when you get query results.
 
+If the optional query parameter `detail` is supplied, then the response also includes the following:
+- A `stages` object that summarizes information about the different stages being used for query execution, such as stage number, phase, start time, duration, input and output information, processing methods, and partitioning.
+- A `counters` object that provides details on the rows, bytes, and files processed at various stages for each worker across different channels, along with sort progress.
+- A `warnings` object that provides details about any warnings.
+
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/v2/sql/statements/:queryId</code>
+`GET` `/druid/v2/sql/statements/{queryId}`
+
+#### Query parameters
+* `detail` (optional)
+    * Type: Boolean
+    * Default: false
+    * Fetch additional details about the query, which includes the information about different stages, counters for each stage, and any warnings.
 
 #### Responses
 
@@ -648,7 +687,7 @@ The following example retrieves the status of a query with specified ID `query-9
 
 
 ```shell
-curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/statements/query-9b93f6f7-ab0e-48f5-986a-3520f84f0804"
+curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/statements/query-9b93f6f7-ab0e-48f5-986a-3520f84f0804?detail=true"
 ```
 
 </TabItem>
@@ -656,7 +695,7 @@ curl "http://ROUTER_IP:ROUTER_PORT/druid/v2/sql/statements/query-9b93f6f7-ab0e-4
 
 
 ```HTTP
-GET /druid/v2/sql/statements/query-9b93f6f7-ab0e-48f5-986a-3520f84f0804 HTTP/1.1
+GET /druid/v2/sql/statements/query-9b93f6f7-ab0e-48f5-986a-3520f84f0804?detail=true HTTP/1.1
 Host: http://ROUTER_IP:ROUTER_PORT
 ```
 
@@ -666,7 +705,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
   ```json
 {
@@ -811,7 +850,421 @@ Host: http://ROUTER_IP:ROUTER_PORT
                 "sizeInBytes": 375
             }
         ]
-    }
+    },
+    "stages": [
+        {
+            "stageNumber": 0,
+            "definition": {
+                "id": "query-9b93f6f7-ab0e-48f5-986a-3520f84f0804_0",
+                "input": [
+                    {
+                        "type": "table",
+                        "dataSource": "wikipedia",
+                        "intervals": [
+                            "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z"
+                        ],
+                        "filter": {
+                            "type": "equals",
+                            "column": "user",
+                            "matchValueType": "STRING",
+                            "matchValue": "BlueMoon2662"
+                        },
+                        "filterFields": [
+                            "user"
+                        ]
+                    }
+                ],
+                "processor": {
+                    "type": "scan",
+                    "query": {
+                        "queryType": "scan",
+                        "dataSource": {
+                            "type": "inputNumber",
+                            "inputNumber": 0
+                        },
+                        "intervals": {
+                            "type": "intervals",
+                            "intervals": [
+                                "-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z"
+                            ]
+                        },
+                        "virtualColumns": [
+                            {
+                                "type": "expression",
+                                "name": "v0",
+                                "expression": "'BlueMoon2662'",
+                                "outputType": "STRING"
+                            }
+                        ],
+                        "resultFormat": "compactedList",
+                        "limit": 1001,
+                        "filter": {
+                            "type": "equals",
+                            "column": "user",
+                            "matchValueType": "STRING",
+                            "matchValue": "BlueMoon2662"
+                        },
+                        "columns": [
+                            "__time",
+                            "added",
+                            "channel",
+                            "cityName",
+                            "comment",
+                            "commentLength",
+                            "countryIsoCode",
+                            "countryName",
+                            "deleted",
+                            "delta",
+                            "deltaBucket",
+                            "diffUrl",
+                            "flags",
+                            "isAnonymous",
+                            "isMinor",
+                            "isNew",
+                            "isRobot",
+                            "isUnpatrolled",
+                            "metroCode",
+                            "namespace",
+                            "page",
+                            "regionIsoCode",
+                            "regionName",
+                            "v0"
+                        ],
+                        "context": {
+                            "__resultFormat": "array",
+                            "__user": "allowAll",
+                            "executionMode": "async",
+                            "finalize": true,
+                            "maxNumTasks": 2,
+                            "maxParseExceptions": 0,
+                            "queryId": "33b53acb-7533-4880-a81b-51c16c489eab",
+                            "scanSignature": "[{\"name\":\"__time\",\"type\":\"LONG\"},{\"name\":\"added\",\"type\":\"LONG\"},{\"name\":\"channel\",\"type\":\"STRING\"},{\"name\":\"cityName\",\"type\":\"STRING\"},{\"name\":\"comment\",\"type\":\"STRING\"},{\"name\":\"commentLength\",\"type\":\"LONG\"},{\"name\":\"countryIsoCode\",\"type\":\"STRING\"},{\"name\":\"countryName\",\"type\":\"STRING\"},{\"name\":\"deleted\",\"type\":\"LONG\"},{\"name\":\"delta\",\"type\":\"LONG\"},{\"name\":\"deltaBucket\",\"type\":\"LONG\"},{\"name\":\"diffUrl\",\"type\":\"STRING\"},{\"name\":\"flags\",\"type\":\"STRING\"},{\"name\":\"isAnonymous\",\"type\":\"STRING\"},{\"name\":\"isMinor\",\"type\":\"STRING\"},{\"name\":\"isNew\",\"type\":\"STRING\"},{\"name\":\"isRobot\",\"type\":\"STRING\"},{\"name\":\"isUnpatrolled\",\"type\":\"STRING\"},{\"name\":\"metroCode\",\"type\":\"STRING\"},{\"name\":\"namespace\",\"type\":\"STRING\"},{\"name\":\"page\",\"type\":\"STRING\"},{\"name\":\"regionIsoCode\",\"type\":\"STRING\"},{\"name\":\"regionName\",\"type\":\"STRING\"},{\"name\":\"v0\",\"type\":\"STRING\"}]",
+                            "sqlOuterLimit": 1001,
+                            "sqlQueryId": "33b53acb-7533-4880-a81b-51c16c489eab",
+                            "sqlStringifyArrays": false
+                        },
+                        "columnTypes": [
+                            "LONG",
+                            "LONG",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "LONG",
+                            "STRING",
+                            "STRING",
+                            "LONG",
+                            "LONG",
+                            "LONG",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING",
+                            "STRING"
+                        ],
+                        "granularity": {
+                            "type": "all"
+                        },
+                        "legacy": false
+                    }
+                },
+                "signature": [
+                    {
+                        "name": "__boost",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "__time",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "added",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "channel",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "cityName",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "comment",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "commentLength",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "countryIsoCode",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "countryName",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "deleted",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "delta",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "deltaBucket",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "diffUrl",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "flags",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isAnonymous",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isMinor",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isNew",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isRobot",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isUnpatrolled",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "metroCode",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "namespace",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "page",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "regionIsoCode",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "regionName",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "v0",
+                        "type": "STRING"
+                    }
+                ],
+                "shuffleSpec": {
+                    "type": "mix"
+                },
+                "maxWorkerCount": 1
+            },
+            "phase": "FINISHED",
+            "workerCount": 1,
+            "partitionCount": 1,
+            "shuffle": "mix",
+            "output": "localStorage",
+            "startTime": "2024-07-31T15:20:21.255Z",
+            "duration": 103
+        },
+        {
+            "stageNumber": 1,
+            "definition": {
+                "id": "query-9b93f6f7-ab0e-48f5-986a-3520f84f0804_1",
+                "input": [
+                    {
+                        "type": "stage",
+                        "stage": 0
+                    }
+                ],
+                "processor": {
+                    "type": "limit",
+                    "limit": 1001
+                },
+                "signature": [
+                    {
+                        "name": "__boost",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "__time",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "added",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "channel",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "cityName",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "comment",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "commentLength",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "countryIsoCode",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "countryName",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "deleted",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "delta",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "deltaBucket",
+                        "type": "LONG"
+                    },
+                    {
+                        "name": "diffUrl",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "flags",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isAnonymous",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isMinor",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isNew",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isRobot",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "isUnpatrolled",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "metroCode",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "namespace",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "page",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "regionIsoCode",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "regionName",
+                        "type": "STRING"
+                    },
+                    {
+                        "name": "v0",
+                        "type": "STRING"
+                    }
+                ],
+                "shuffleSpec": {
+                    "type": "maxCount",
+                    "clusterBy": {
+                        "columns": [
+                            {
+                                "columnName": "__boost",
+                                "order": "ASCENDING"
+                            }
+                        ]
+                    },
+                    "partitions": 1
+                },
+                "maxWorkerCount": 1
+            },
+            "phase": "FINISHED",
+            "workerCount": 1,
+            "partitionCount": 1,
+            "shuffle": "globalSort",
+            "output": "localStorage",
+            "startTime": "2024-07-31T15:20:21.355Z",
+            "duration": 10,
+            "sort": true
+        }
+    ],
+    "counters": {
+        "0": {
+            "0": {
+                "input0": {
+                    "type": "channel",
+                    "rows": [
+                        24433
+                    ],
+                    "bytes": [
+                        7393933
+                    ],
+                    "files": [
+                        22
+                    ],
+                    "totalFiles": [
+                        22
+                    ]
+                }
+            }
+        },
+        "1": {
+            "0": {
+                "sortProgress": {
+                    "type": "sortProgress",
+                    "totalMergingLevels": -1,
+                    "levelToTotalBatches": {},
+                    "levelToMergedBatches": {},
+                    "totalMergersForUltimateLevel": -1,
+                    "triviallyComplete": true,
+                    "progressDigest": 1
+                }
+            }
+        }
+    },
+    "warnings": []
 }
   ```
 </details>
@@ -821,14 +1274,13 @@ Host: http://ROUTER_IP:ROUTER_PORT
 
 Retrieves results for completed queries. Results are separated into pages, so you can use the optional `page` parameter to refine the results you get. Druid returns information about the composition of each page and its page number (`id`). For information about pages, see [Get query status](#get-query-status).
 
-
 If a page number isn't passed, all results are returned sequentially in the same response. If you have large result sets, you may encounter timeouts based on the value configured for `druid.router.http.readTimeout`.
 
 Getting the query results for an ingestion query returns an empty response.
 
 #### URL
 
-<code class="getAPI">GET</code> <code>/druid/v2/sql/statements/:queryId/results</code>
+`GET` `/druid/v2/sql/statements/{queryId}/results`
 
 #### Query parameters
 * `page` (optional)
@@ -920,7 +1372,7 @@ Host: http://ROUTER_IP:ROUTER_PORT
 #### Sample response
 
 <details>
-  <summary>Click to show sample response</summary>
+  <summary>View the response</summary>
 
   ```json
 [
@@ -1154,7 +1606,7 @@ Cancels a running or accepted query.
 
 #### URL
 
-<code class="deleteAPI">DELETE</code> <code>/druid/v2/sql/statements/:queryId</code>
+`DELETE` `/druid/v2/sql/statements/{queryId}`
 
 #### Responses
 

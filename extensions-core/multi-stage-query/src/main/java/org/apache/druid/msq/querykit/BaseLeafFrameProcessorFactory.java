@@ -19,11 +19,13 @@
 
 package org.apache.druid.msq.querykit;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import it.unimi.dsi.fastutil.ints.Int2ObjectAVLTreeMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import org.apache.druid.collections.ResourceHolder;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.channel.ReadableConcatFrameChannel;
 import org.apache.druid.frame.channel.ReadableFrameChannel;
 import org.apache.druid.frame.channel.WritableFrameChannel;
@@ -42,11 +44,13 @@ import org.apache.druid.msq.input.ReadableInput;
 import org.apache.druid.msq.input.ReadableInputs;
 import org.apache.druid.msq.input.external.ExternalInputSlice;
 import org.apache.druid.msq.input.stage.StageInputSlice;
+import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.kernel.FrameContext;
 import org.apache.druid.msq.kernel.ProcessorsAndChannels;
 import org.apache.druid.msq.kernel.StageDefinition;
 import org.apache.druid.query.Query;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.utils.CollectionUtils;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
@@ -54,7 +58,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -83,7 +86,8 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
       FrameContext frameContext,
       int maxOutstandingProcessors,
       CounterTracker counters,
-      Consumer<Throwable> warningPublisher
+      Consumer<Throwable> warningPublisher,
+      final boolean removeNullBytes
   ) throws IOException
   {
     // BaseLeafFrameProcessorFactory is used for native Druid queries, where the following input cases can happen:
@@ -121,18 +125,9 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
       final OutputChannel outputChannel = outputChannelFactory.openChannel(0 /* Partition number doesn't matter */);
       outputChannels.add(outputChannel);
       channelQueue.add(outputChannel.getWritableChannel());
-      frameWriterFactoryQueue.add(stageDefinition.createFrameWriterFactory(outputChannel.getFrameMemoryAllocator())
-      );
+      frameWriterFactoryQueue.add(stageDefinition.createFrameWriterFactory(outputChannel.getFrameMemoryAllocator(), removeNullBytes));
     }
 
-    // Read all base inputs in separate processors, one per processor.
-    final Iterable<ReadableInput> processorBaseInputs = readBaseInputs(
-        stageDefinition,
-        inputSlices,
-        inputSliceReader,
-        counters,
-        warningPublisher
-    );
 
     // SegmentMapFn processor, if needed. May be null.
     final FrameProcessor<Function<SegmentReference, SegmentReference>> segmentMapFnProcessor =
@@ -146,30 +141,91 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
         );
 
     // Function to generate a processor manger for the regular processors, which run after the segmentMapFnProcessor.
-    final Function<Function<SegmentReference, SegmentReference>, ProcessorManager<Object, Long>> processorManagerFn =
-        segmentMapFn ->
-            new BaseLeafFrameProcessorManager(
-                processorBaseInputs,
-                segmentMapFn,
-                frameWriterFactoryQueue,
-                channelQueue,
-                frameContext,
-                this
-            );
+    final Function<List<Function<SegmentReference, SegmentReference>>, ProcessorManager<Object, Long>> processorManagerFn = segmentMapFnList -> {
+      final Function<SegmentReference, SegmentReference> segmentMapFunction =
+          CollectionUtils.getOnlyElement(segmentMapFnList, throwable -> DruidException.defensive("Only one segment map function expected"));
+      return createBaseLeafProcessorManagerWithHandoff(
+          stageDefinition,
+          inputSlices,
+          inputSliceReader,
+          counters,
+          warningPublisher,
+          segmentMapFunction,
+          frameWriterFactoryQueue,
+          channelQueue,
+          frameContext
+      );
+    };
 
     //noinspection rawtypes
     final ProcessorManager processorManager;
 
     if (segmentMapFnProcessor == null) {
       final Function<SegmentReference, SegmentReference> segmentMapFn =
-          query.getDataSource().createSegmentMapFunction(query, new AtomicLong());
-      processorManager = processorManagerFn.apply(segmentMapFn);
+          query.getDataSource().createSegmentMapFunction(query);
+      processorManager = processorManagerFn.apply(ImmutableList.of(segmentMapFn));
     } else {
-      processorManager = new ChainedProcessorManager<>(segmentMapFnProcessor, processorManagerFn);
+      processorManager = new ChainedProcessorManager<>(ProcessorManagers.of(() -> segmentMapFnProcessor), processorManagerFn);
     }
 
     //noinspection unchecked,rawtypes
     return new ProcessorsAndChannels<>(processorManager, OutputChannels.wrapReadOnly(outputChannels));
+  }
+
+  private ProcessorManager<Object, Long> createBaseLeafProcessorManagerWithHandoff(
+      final StageDefinition stageDefinition,
+      final List<InputSlice> inputSlices,
+      final InputSliceReader inputSliceReader,
+      final CounterTracker counters,
+      final Consumer<Throwable> warningPublisher,
+      final Function<SegmentReference, SegmentReference> segmentMapFunction,
+      final Queue<FrameWriterFactory> frameWriterFactoryQueue,
+      final Queue<WritableFrameChannel> channelQueue,
+      final FrameContext frameContext
+  )
+  {
+    final BaseLeafFrameProcessorFactory factory = this;
+    // Read all base inputs in separate processors, one per processor.
+    final Iterable<ReadableInput> processorBaseInputs = readBaseInputs(
+        stageDefinition,
+        inputSlices,
+        inputSliceReader,
+        counters,
+        warningPublisher
+    );
+
+    return new ChainedProcessorManager<>(
+        new BaseLeafFrameProcessorManager(
+            processorBaseInputs,
+            segmentMapFunction,
+            frameWriterFactoryQueue,
+            channelQueue,
+            frameContext,
+            factory
+        ),
+        objects -> {
+          if (objects == null || objects.isEmpty()) {
+            return ProcessorManagers.none();
+          }
+          List<InputSlice> handedOffSegments = new ArrayList<>();
+          for (Object o : objects) {
+            if (o != null && o instanceof SegmentsInputSlice) {
+              SegmentsInputSlice slice = (SegmentsInputSlice) o;
+              handedOffSegments.add(slice);
+            }
+          }
+
+          // Fetch any handed off segments from deep storage.
+          return new BaseLeafFrameProcessorManager(
+              readBaseInputs(stageDefinition, handedOffSegments, inputSliceReader, counters, warningPublisher),
+              segmentMapFunction,
+              frameWriterFactoryQueue,
+              channelQueue,
+              frameContext,
+              factory
+          );
+        }
+    );
   }
 
   protected abstract FrameProcessor<Object> makeProcessor(
@@ -283,7 +339,7 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
         );
 
     if (broadcastInputs.isEmpty()) {
-      if (query.getDataSource().getAnalysis().isJoin()) {
+      if (query.getDataSourceAnalysis().isJoin()) {
         // Joins may require significant computation to compute the segmentMapFn. Offload it to a processor.
         return new SimpleSegmentMapFnProcessor(query);
       } else {
@@ -295,7 +351,7 @@ public abstract class BaseLeafFrameProcessorFactory extends BaseFrameProcessorFa
       return BroadcastJoinSegmentMapFnProcessor.create(
           query,
           broadcastInputs,
-          frameContext.memoryParameters().getBroadcastJoinMemory()
+          frameContext.memoryParameters().getBroadcastBufferMemory()
       );
     }
   }

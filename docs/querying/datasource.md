@@ -174,10 +174,56 @@ table unions.
 Refer to the [Query execution](query-execution.md#union) page for more details on how queries are executed when you
 use union datasources.
 
+#### Dynamic table append
+
+<Tabs>
+<TabItem value="sql" label="SQL">
+
+```sql
+SELECT column1, column2, column3
+FROM TABLE(APPEND('table1','table2','table3'))
+```
+</TabItem>
+</Tabs>
+
+Perform dynamic table appends in SQL using `TABLE(APPEND(...))`. This simplifies SQL syntax to match columns by name from multiple tables. The native query syntax remains the same as for native union datasources.
+Suppose you have three tables:
+* `table1` has `column1`
+* `table2` has `column2`
+* `table3` has `column1`, `column2`, `column3`
+
+You can create a union view of all the tables by using [table-level union](sql.md#table-level):
+```sql
+SELECT * from (
+  SELECT column1,NULL AS column2,NULL AS column3 FROM table1
+  UNION ALL
+  SELECT NULL AS column1,column2,NULL AS column3 FROM table2
+  UNION ALL
+  SELECT column1,column2,column3 FROM table3
+) t
+```
+
+However depending on the size of the table's schema it might be quite complicated to do that; `TABLE(APPEND('table1','table2','table3'))` represents the same in a more compact form.
+
+:::info
+Only tables defined in the catalog are supported in `TABLE(APPEND())` - due to that; common table expressions result in `table not found` errors for queries like:
+```sql
+WITH cte_table AS (SELECT * from TABLE1) SELECT * FROM TABLE(APPEND('cte_table'))
+```
+:::
+
 ### `inline`
 
 <Tabs>
-<TabItem value="7" label="Native">
+<TabItem value="sql" label="SQL">
+
+```sql
+SELECT * from (VALUES ('United States', 'San Francisco'),
+                      ('Canada', 'Calgary')
+              ) t (country, city)
+```
+</TabItem>
+<TabItem value="native" label="Native">
 
 ```json
 {
@@ -319,7 +365,7 @@ GROUP BY
 Join datasources allow you to do a SQL-style join of two datasources. Stacking joins on top of each other allows
 you to join arbitrarily many datasources.
 
-In Druid {{DRUIDVERSION}}, joins in native queries are implemented with a broadcast hash-join algorithm. This means
+Joins in native queries are implemented with a broadcast hash-join algorithm. This means
 that all datasources other than the leftmost "base" datasource must fit in memory. In native queries, the join condition
 must be an equality. In SQL, any join condition is accepted, but only equalities of a certain form
 (see [Joins in SQL](#joins-in-sql)) execute efficiently as part of a native join. For other kinds of conditions, planner will try
@@ -385,25 +431,21 @@ and how to detect it.
 3. One common reason for implicit subquery generation is if the types of the two halves of an equality do not match.
 For example, since lookup keys are always strings, the condition `druid.d JOIN lookup.l ON d.field = l.field` will
 perform best if `d.field` is a string.
-4. As of Druid {{DRUIDVERSION}}, the join operator must evaluate the condition for each row. In the future, we expect
-to implement both early and deferred condition evaluation, which we expect to improve performance considerably for
-common use cases.
+4. The join operator must evaluate the condition for each row. 
 5. Currently, Druid does not support pushing down predicates (condition and filter) past a Join (i.e. into
 Join's children). Druid only supports pushing predicates into the join if they originated from
 above the join. Hence, the location of predicates and filters in your Druid SQL is very important.
 Also, as a result of this, comma joins should be avoided.
 
-#### Future work for joins
+#### Limitations for joins
 
-Joins are an area of active development in Druid. The following features are missing today but may appear in
-future versions:
+Joins in Druid have the following limitations:
 
-- Reordering of join operations to get the most performant plan.
-- Preloaded dimension tables that are wider than lookups (i.e. supporting more than a single key and single value).
-- RIGHT OUTER and FULL OUTER joins in the native query engine. Currently, they are partially implemented. Queries run
+- The order of joins is not entirely optimized. Join operations are not reordered to get the most performant plan.
+- Preloaded dimension tables that are wider than lookups (i.e. supporting more than a single key and single value) are not supported.
+- RIGHT OUTER and FULL OUTER joins in the native query engine are not fully implemented. Queries run
   but results are not always correct.
-- Performance-related optimizations as mentioned in the [previous section](#join-performance).
-- Join conditions on a column containing a multi-value dimension.
+- Join conditions on a column can't contain a multi-value dimension.
 
 ### `unnest`
 

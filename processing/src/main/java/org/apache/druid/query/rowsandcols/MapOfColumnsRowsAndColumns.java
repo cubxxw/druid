@@ -21,14 +21,17 @@ package org.apache.druid.query.rowsandcols;
 
 import com.google.common.collect.ImmutableMap;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.query.groupby.ResultRow;
 import org.apache.druid.query.rowsandcols.column.Column;
 import org.apache.druid.query.rowsandcols.column.DoubleArrayColumn;
 import org.apache.druid.query.rowsandcols.column.IntArrayColumn;
+import org.apache.druid.query.rowsandcols.column.LongArrayColumn;
 import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
 import org.apache.druid.query.rowsandcols.semantic.AppendableRowsAndColumns;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -78,6 +81,29 @@ public class MapOfColumnsRowsAndColumns implements RowsAndColumns
         (Map<String, Column>) map,
         map.values().iterator().next().toAccessor().numRows()
     );
+  }
+
+  public static MapOfColumnsRowsAndColumns fromResultRow(ArrayList<ResultRow> objs, RowSignature signature)
+  {
+    return fromResultRowTillIndex(objs, signature, objs.size() - 1);
+  }
+
+  public static MapOfColumnsRowsAndColumns fromResultRowTillIndex(ArrayList<ResultRow> objs, RowSignature signature, int index)
+  {
+    final Builder bob = builder();
+    if (!objs.isEmpty()) {
+      Object[][] columnOriented = new Object[objs.get(0).length()][index + 1];
+      for (int i = 0; i <= index; ++i) {
+        for (int j = 0; j < objs.get(i).length(); ++j) {
+          columnOriented[j][i] = objs.get(i).get(j);
+        }
+      }
+      for (int i = 0; i < signature.size(); ++i) {
+        final ColumnType type = signature.getColumnType(i).orElse(null);
+        bob.add(signature.getColumnName(i), columnOriented[i], type);
+      }
+    }
+    return bob.build();
   }
 
   public static MapOfColumnsRowsAndColumns fromRowObjects(Object[][] objs, RowSignature signature)
@@ -138,7 +164,7 @@ public class MapOfColumnsRowsAndColumns implements RowsAndColumns
     if (AppendableRowsAndColumns.class.equals(clazz)) {
       return (T) new AppendableMapOfColumns(this);
     }
-    return null;
+    return RowsAndColumns.super.as(clazz);
   }
 
   public static class Builder
@@ -148,6 +174,12 @@ public class MapOfColumnsRowsAndColumns implements RowsAndColumns
     public Builder add(String name, int[] vals)
     {
       return add(name, new IntArrayColumn(vals));
+    }
+
+    @SuppressWarnings("unused")
+    public Builder add(String name, long[] vals)
+    {
+      return add(name, new LongArrayColumn(vals));
     }
 
     public Builder add(String name, double[] vals)

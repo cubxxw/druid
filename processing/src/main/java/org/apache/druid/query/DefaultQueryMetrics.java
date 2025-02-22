@@ -25,11 +25,9 @@ import org.apache.druid.collections.bitmap.BitmapFactory;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.emitter.service.ServiceEmitter;
 import org.apache.druid.java.util.emitter.service.ServiceMetricEvent;
-import org.apache.druid.query.filter.Filter;
 import org.joda.time.Interval;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -42,6 +40,10 @@ import java.util.stream.Collectors;
  */
 public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMetrics<QueryType>
 {
+  public static final String QUERY_WAIT_TIME = "query/wait/time";
+  public static final String QUERY_SEGMENT_TIME = "query/segment/time";
+  public static final String QUERY_SEGMENT_AND_CACHE_TIME = "query/segmentAndCache/time";
+
   protected final ServiceMetricEvent.Builder builder = new ServiceMetricEvent.Builder();
   protected final Map<String, Number> metrics = new HashMap<>();
 
@@ -193,15 +195,9 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   }
 
   @Override
-  public void preFilters(List<Filter> preFilters)
+  public void projection(String projection)
   {
-    // Emit nothing by default.
-  }
-
-  @Override
-  public void postFilters(List<Filter> postFilters)
-  {
-    // Emit nothing by default.
+    setDimension("projection", projection);
   }
 
   @Override
@@ -243,19 +239,19 @@ public class DefaultQueryMetrics<QueryType extends Query<?>> implements QueryMet
   @Override
   public QueryMetrics<QueryType> reportWaitTime(long timeNs)
   {
-    return reportMillisTimeMetric("query/wait/time", timeNs);
+    return reportMillisTimeMetric(QUERY_WAIT_TIME, timeNs);
   }
 
   @Override
   public QueryMetrics<QueryType> reportSegmentTime(long timeNs)
   {
-    return reportMillisTimeMetric("query/segment/time", timeNs);
+    return reportMillisTimeMetric(QUERY_SEGMENT_TIME, timeNs);
   }
 
   @Override
   public QueryMetrics<QueryType> reportSegmentAndCacheTime(long timeNs)
   {
-    return reportMillisTimeMetric("query/segmentAndCache/time", timeNs);
+    return reportMillisTimeMetric(QUERY_SEGMENT_AND_CACHE_TIME, timeNs);
   }
 
   @Override

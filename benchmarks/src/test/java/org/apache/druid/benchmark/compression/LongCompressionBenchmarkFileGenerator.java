@@ -20,7 +20,6 @@
 package org.apache.druid.benchmark.compression;
 
 import com.google.common.collect.ImmutableList;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.data.ColumnarLongsSerializer;
@@ -29,6 +28,7 @@ import org.apache.druid.segment.data.CompressionStrategy;
 import org.apache.druid.segment.generator.ColumnValueGenerator;
 import org.apache.druid.segment.generator.GeneratorColumnSchema;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMedium;
+import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -45,10 +45,6 @@ import java.util.Map;
 
 public class LongCompressionBenchmarkFileGenerator
 {
-  static {
-    NullHandling.initializeForTests();
-  }
-
   private static final Logger log = new Logger(LongCompressionBenchmarkFileGenerator.class);
   public static final int ROW_NUM = 5000000;
   public static final List<CompressionStrategy> COMPRESSIONS =
@@ -148,13 +144,15 @@ public class LongCompressionBenchmarkFileGenerator
           compFile.delete();
           File dataFile = new File(dir, entry.getKey());
 
+          SegmentWriteOutMedium segmentWriteOutMedium = new OffHeapMemorySegmentWriteOutMedium();
           ColumnarLongsSerializer writer = CompressionFactory.getLongSerializer(
               "long-benchmark",
-              new OffHeapMemorySegmentWriteOutMedium(),
+              segmentWriteOutMedium,
               "long",
               ByteOrder.nativeOrder(),
               encoding,
-              compression
+              compression,
+              segmentWriteOutMedium.getCloser()
           );
           try (
               BufferedReader br = Files.newBufferedReader(dataFile.toPath(), StandardCharsets.UTF_8);

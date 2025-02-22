@@ -22,9 +22,7 @@ package org.apache.druid.query;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.frame.Frame;
-import org.apache.druid.frame.FrameType;
 import org.apache.druid.frame.allocation.HeapMemoryAllocator;
 import org.apache.druid.frame.allocation.SingleMemoryAllocatorFactory;
 import org.apache.druid.frame.segment.FrameCursorUtils;
@@ -46,11 +44,6 @@ import java.util.ArrayList;
 
 public class FrameBasedInlineDataSourceSerializerTest
 {
-
-  static {
-    NullHandling.initializeForTests();
-  }
-
   private static final Interval INTERVAL = Intervals.of("2000/P1Y");
 
   private static final RowSignature FOO_INLINE_SIGNATURE = RowSignature.builder()
@@ -132,13 +125,13 @@ public class FrameBasedInlineDataSourceSerializerTest
     );
     Cursor cursor = cursorAndCloseable.lhs;
     RowSignature modifiedRowSignature = FrameWriterUtils.replaceUnknownTypesWithNestedColumns(rowSignature);
-    Sequence<Frame> frames = FrameCursorUtils.cursorToFrames(
+    Sequence<Frame> frames = FrameCursorUtils.cursorToFramesSequence(
         cursor,
-        FrameWriters.makeFrameWriterFactory(
-            FrameType.ROW_BASED,
+        FrameWriters.makeRowBasedFrameWriterFactory(
             new SingleMemoryAllocatorFactory(HeapMemoryAllocator.unlimited()),
             modifiedRowSignature,
-            new ArrayList<>()
+            new ArrayList<>(),
+            false
         )
     );
     return new FrameBasedInlineDataSource(

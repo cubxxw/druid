@@ -21,6 +21,14 @@
 
 const Redirects=[
   {
+    "from": "/docs/latest/tutorials/tutorial-transform-spec",
+    "to": "/docs/latest/tutorials/tutorial-transform"
+  },
+  {
+    "from": "/docs/latest/development/extensions-core/kafka-extraction-namespace/",
+    "to": "/docs/latest/querying/kafka-extraction-namespace"
+  },
+  {
     "from": [
       "/docs/latest/configuration/auth.html",
       "/docs/latest/design/auth.html"
@@ -120,12 +128,19 @@ const Redirects=[
       "/docs/latest/development/community-extensions/rabbitmq.html",
       "/docs/latest/development/kafka-simple-consumer-firehose.html",
       "/docs/latest/development/extensions-core/kafka-supervisor-operations.html",
-      "/docs/latest/development/extensions-core/kafka-supervisor-reference.html"
+      "/docs/latest/development/extensions-core/kafka-supervisor-reference.html",
+      "/docs/latest/development/extensions-core/kafka-ingestion.html",
+      "/docs/latest/development/extensions-core/kafka-supervisor-operations",
+      "/docs/latest/development/extensions-core/kafka-supervisor-reference",
+      "/docs/latest/development/extensions-core/kafka-ingestion"
     ],
     "to": "/docs/latest/ingestion/kafka-ingestion"
   },
   {
-    "from": "/docs/latest/development/extensions-core/kinesis-ingestion.html",
+    "from": [
+      "/docs/latest/development/extensions-core/kinesis-ingestion.html",
+      "/docs/latest/development/extensions-core/kinesis-ingestion"
+    ],
     "to": "/docs/latest/ingestion/kinesis-ingestion"
   },
   {
@@ -141,8 +156,11 @@ const Redirects=[
     "to": "/docs/latest/querying/scan-query"
   },
   {
-    "from": "/docs/latest/development/extensions-core/namespaced-lookup.html",
-    "to": "/docs/latest/development/extensions-core/lookups-cached-global"
+    "from": [
+      "/docs/latest/development/extensions-core/namespaced-lookup.html",
+      "/docs/latest/development/extensions-core/lookups-cached-global"
+    ],
+    "to": "/docs/latest/querying/lookups-cached-global"
   },
   {
     "from": "/docs/latest/development/indexer.html",
@@ -191,8 +209,8 @@ const Redirects=[
   },
   {
     "from": [
-      "/docs/latest/ingestion/flatten-json.html",
-      "/docs/latest/ingestion/transform-spec.html"
+      "/docs/latest/ingestion/transform-spec.html",
+      "/docs/latest/ingestion/flatten-json.html"
     ],
     "to": "/docs/latest/ingestion/ingestion-spec"
   },
@@ -277,6 +295,10 @@ const Redirects=[
     "to": "/docs/latest/development/extensions-core/google"
   },
   {
+    "from": "/docs/latest/development/extensions-contrib/k8s-jobs",
+    "to": "/docs/latest/development/extensions-core/k8s-jobs"
+  },
+  {
     "from": "/docs/latest/development/integrating-druid-with-other-technologies.html",
     "to": "/docs/latest/ingestion/"
   },
@@ -323,6 +345,10 @@ const Redirects=[
   {
     "from":  "/docs/latest/operations/api-reference/",
     "to": "/docs/latest/api-reference/"
+  },
+  {
+    "from": "/docs/latest/development/extensions-core/druid-ranger-security",
+    "to": "/docs/latest/development/extensions-contrib/druid-ranger-security"
   }
 ]
 

@@ -20,6 +20,8 @@
 package org.apache.druid.sql.calcite;
 
 import org.apache.calcite.rel.rules.CoreRules;
+import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.UnnestDataSource;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -38,9 +40,59 @@ public @interface DecoupledTestConfig
    *
    * The value of this field should describe the root cause of the difference.
    */
-  NativeQueryIgnore nativeQueryIgnore() default NativeQueryIgnore.NONE;
+  QuidemTestCaseReason quidemReason() default QuidemTestCaseReason.NONE;
 
-  enum NativeQueryIgnore
+  /**
+   * Run the tests normally; however disable the native plan checks.
+   */
+  IgnoreQueriesReason ignoreExpectedQueriesReason() default IgnoreQueriesReason.NONE;
+
+  /**
+   * Ignores defaults mode for the given reason
+   */
+  IgnoreDefaultsReson ignoreDefaultsMode() default IgnoreDefaultsReson.NONE;
+
+  enum IgnoreDefaultsReson
+  {
+    NONE,
+    /**
+     * Decoupled mode avoids unnesting "" in defaults mode
+     *
+     * <pre>
+     * new Object[]{"a", "[\"a\",\"b\"]"},
+     * new Object[]{"a", ""}
+     * </pre>
+     */
+    UNNEST_EMPTY_DIFFERENCE,
+    /**
+     *
+     */
+    UNNEST_ARRAY_ISSUE
+  }
+
+  enum IgnoreQueriesReason
+  {
+    NONE,
+    /**
+     * An extra ScanQuery to service a Project and/or Filter was added.
+     */
+    UNNEST_EXTRA_SCANQUERY,
+    /**
+     * Occurs in tandem with {@link NotYetSupported.Modes#PREDICATE_NOT_SUPPORTED}.
+     */
+    PREDICATE_NOT_SUPPORTED,
+    /**
+     * Not really different plan.
+     */
+    EQUIV_PLAN;
+
+    public boolean isPresent()
+    {
+      return this != NONE;
+    }
+  }
+
+  enum QuidemTestCaseReason
   {
     NONE,
     /**
@@ -63,12 +115,92 @@ public @interface DecoupledTestConfig
     /**
      * Worse plan; may loose vectorization; but no extra queries
      */
-    SLIGHTLY_WORSE_PLAN;
+    SLIGHTLY_WORSE_PLAN,
+    /**
+     * Equvivalent plan.
+     *
+     * Renamed variable
+     */
+    EQUIV_PLAN,
+    /**
+     * {@link QueryContexts#SQL_JOIN_LEFT_SCAN_DIRECT} not supported.
+     */
+    JOIN_LEFT_DIRECT_ACCESS,
+    /**
+     * Different filter layout.
+     *
+     * Filter is pushed below join to the left.
+     */
+    JOIN_FILTER_LOCATIONS,
+    /**
+     * New scans / etc.
+     */
+    DEFINETLY_WORSE_PLAN,
+    /**
+     * Some extra unused columns are being projected.
+     *
+     * Example: ScanQuery over a join projects columns=[dim2, j0.m1, m1, m2] instead of just columns=[dim2, m2]
+     */
+    EQUIV_PLAN_EXTRA_COLUMNS,
+    /**
+     * Materialization of a CAST was pushed down to a join branch
+     *
+     * instead of  joining on condition (CAST("j0.k", 'DOUBLE') == "_j0.m1")
+     * a vc was computed for CAST("j0.k", 'DOUBLE')
+     */
+    EQUIV_PLAN_CAST_MATERIALIZED_EARLIER,
+    /**
+     * Filter pushed down.
+     *
+     * Instead:
+     *  Filter -> Join -> Table
+     *  Join -> Filter -> Table
+     */
+    SLIGHTLY_WORSE_FILTER_PUSHED_TO_JOIN_OPERAND,
+    /**
+     * Instead:
+     * Join (l=r && lCol='a') -> Gby
+     * Join (l=r) -> Gby[lCol='a]
+     */
+    FILTER_PUSHED_DOWN_FROM_JOIN_CAN_BE_MORE,
+    /**
+     * Strange things; needs more investigation
+     */
+    IRRELEVANT_SCANQUERY,
+    /**
+     * Extra scan query under {@link UnnestDataSource}.
+     */
+    UNNEST_EXTRA_SCAN,
+    /**
+     * Extra virtualcolumn appeared; seemingly unused
+     */
+    UNUSED_VIRTUALCOLUMN,
+    /**
+     * Unnest uses a VC to access a constant like array(1,2,3).
+     */
+    UNNEST_VC_USES_PROJECTED_CONSTANT,
+    /**
+     * This should need some investigation.
+     *
+     * Its not invalid; just strange.
+     */
+    SCAN_QUERY_ON_FILTERED_DS_DOING_FILTERING,
+    /**
+     * New plan UNNEST-s a different resultset.
+     */
+    UNNEST_DIFFERENT_RESULTSET,
+    /**
+     * Uses a UNION ALL query.
+     */
+    UNION_ALL_QUERY,
+    /**
+     * This is due to substring('',1') is null.
+     */
+    UNNEST_SUBSTRING_EMPTY;
 
     public boolean isPresent()
     {
       return this != NONE;
     }
-  };
-
+  }
 }

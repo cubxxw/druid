@@ -32,7 +32,7 @@ import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeFamily;
-import org.apache.druid.common.config.NullHandling;
+import org.apache.calcite.tools.RelBuilder;
 import org.apache.druid.math.expr.Function;
 import org.apache.druid.sql.calcite.expression.builtin.ConcatOperatorConversion;
 import org.apache.druid.sql.calcite.expression.builtin.TextcatOperatorConversion;
@@ -59,7 +59,9 @@ public class FlattenConcatRule extends RelOptRule implements SubstitutionRule
 
     //noinspection ObjectEquality
     if (newNode != oldNode) {
-      call.transformTo(newNode);
+      final RelBuilder relBuilder = call.builder().push(newNode);
+      relBuilder.convert(oldNode.getRowType(), false);
+      call.transformTo(relBuilder.build());
       call.getPlanner().prune(oldNode);
     }
   }
@@ -89,7 +91,7 @@ public class FlattenConcatRule extends RelOptRule implements SubstitutionRule
             } else {
               newOperands.add(visitedOperand);
             }
-          } else if (RexUtil.isNullLiteral(operand, true) && NullHandling.sqlCompatible()) {
+          } else if (RexUtil.isNullLiteral(operand, true)) {
             return rexBuilder.makeNullLiteral(call.getType());
           } else {
             newOperands.add(operand);

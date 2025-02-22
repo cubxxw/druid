@@ -20,7 +20,6 @@
 package org.apache.druid.query.expression;
 
 import com.google.common.collect.ImmutableList;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.math.expr.Expr;
@@ -67,11 +66,11 @@ class ContainsExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
   @Override
   public ExprEval eval(final Expr.ObjectBinding bindings)
   {
-    final String s = NullHandling.nullToEmptyIfNeeded(arg.eval(bindings).asString());
+    final String s = arg.eval(bindings).asString();
 
     if (s == null) {
       // same behavior as regexp_like.
-      return ExprEval.ofLongBoolean(false);
+      return ExprEval.ofLong(null);
     } else {
       final boolean doesContain = searchFunction.apply(s);
       return ExprEval.ofLongBoolean(doesContain);
@@ -97,7 +96,7 @@ class ContainsExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
     if (caseSensitive) {
       return s -> s.contains(searchString);
     } else {
-      return s -> org.apache.commons.lang.StringUtils.containsIgnoreCase(s, searchString);
+      return s -> org.apache.commons.lang3.StringUtils.containsIgnoreCase(s, searchString);
     }
   }
 }

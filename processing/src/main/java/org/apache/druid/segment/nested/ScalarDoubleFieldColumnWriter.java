@@ -59,20 +59,6 @@ public final class ScalarDoubleFieldColumnWriter extends GlobalDictionaryEncoded
   }
 
   @Override
-  public void open() throws IOException
-  {
-    super.open();
-    doublesSerializer = CompressionFactory.getDoubleSerializer(
-        fieldName,
-        segmentWriteOutMedium,
-        StringUtils.format("%s.double_column", fieldName),
-        ByteOrder.nativeOrder(),
-        indexSpec.getDimensionCompression()
-    );
-    doublesSerializer.open();
-  }
-
-  @Override
   void writeValue(@Nullable Double value) throws IOException
   {
     if (value == null) {
@@ -80,6 +66,21 @@ public final class ScalarDoubleFieldColumnWriter extends GlobalDictionaryEncoded
     } else {
       doublesSerializer.add(value);
     }
+  }
+
+  @Override
+  public void openColumnSerializer(SegmentWriteOutMedium medium, int maxId) throws IOException
+  {
+    super.openColumnSerializer(medium, maxId);
+    doublesSerializer = CompressionFactory.getDoubleSerializer(
+        fieldName,
+        medium,
+        StringUtils.format("%s.double_column", fieldName),
+        ByteOrder.nativeOrder(),
+        indexSpec.getDimensionCompression(),
+        fieldResourceCloser
+    );
+    doublesSerializer.open();
   }
 
   @Override

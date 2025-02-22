@@ -21,10 +21,9 @@ package org.apache.druid.query.filter.sql;
 
 import com.google.common.collect.ImmutableList;
 import org.apache.calcite.avatica.SqlType;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.guice.BloomFilterExtensionModule;
 import org.apache.druid.guice.BloomFilterSerializersModule;
-import org.apache.druid.guice.DruidInjectorBuilder;
+import org.apache.druid.initialization.DruidModule;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.Druids;
@@ -34,23 +33,39 @@ import org.apache.druid.query.filter.BloomKFilter;
 import org.apache.druid.query.filter.BloomKFilterHolder;
 import org.apache.druid.query.filter.ExpressionDimFilter;
 import org.apache.druid.query.filter.OrDimFilter;
+import org.apache.druid.query.filter.sql.BloomDimFilterSqlTest.BloomDimFilterComponentSupplier;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.sql.calcite.BaseCalciteQueryTest;
+import org.apache.druid.sql.calcite.SqlTestFrameworkConfig;
+import org.apache.druid.sql.calcite.TempDirProducer;
 import org.apache.druid.sql.calcite.filtration.Filtration;
 import org.apache.druid.sql.calcite.util.CalciteTests;
+import org.apache.druid.sql.calcite.util.DruidModuleCollection;
+import org.apache.druid.sql.calcite.util.SqlTestFramework.StandardComponentSupplier;
 import org.apache.druid.sql.http.SqlParameter;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+@SqlTestFrameworkConfig.ComponentSupplier(BloomDimFilterComponentSupplier.class)
 public class BloomDimFilterSqlTest extends BaseCalciteQueryTest
 {
-  @Override
-  public void configureGuice(DruidInjectorBuilder builder)
+  public static class BloomDimFilterComponentSupplier extends StandardComponentSupplier
   {
-    super.configureGuice(builder);
-    builder.addModule(new BloomFilterExtensionModule());
+    public BloomDimFilterComponentSupplier(TempDirProducer tempFolderProducer)
+    {
+      super(tempFolderProducer);
+    }
+
+    @Override
+    public DruidModule getCoreModule()
+    {
+      return DruidModuleCollection.of(
+          super.getCoreModule(),
+          new BloomFilterExtensionModule()
+      );
+    }
   }
 
   @Test
@@ -81,16 +96,14 @@ public class BloomDimFilterSqlTest extends BaseCalciteQueryTest
     );
   }
 
+
   @Test
   public void testBloomFilterExprFilter() throws IOException
   {
-    cannotVectorize();
     BloomKFilter filter = new BloomKFilter(1500);
     filter.addString("a-foo");
     filter.addString("-foo");
-    if (!NullHandling.replaceWithDefault()) {
-      filter.addBytes(null, 0, 0);
-    }
+    filter.addBytes(null, 0, 0);
     byte[] bytes = BloomFilterSerializersModule.bloomKFilterToBytes(filter);
     String base64 = StringUtils.encodeBase64String(bytes);
 
@@ -219,7 +232,7 @@ public class BloomDimFilterSqlTest extends BaseCalciteQueryTest
     );
   }
 
-  @Ignore("this test is really slow and is intended to use for comparisons with testBloomFilterBigParameter")
+  @Disabled("this test is really slow and is intended to use for comparisons with testBloomFilterBigParameter")
   @Test
   public void testBloomFilterBigNoParam() throws IOException
   {
@@ -247,7 +260,7 @@ public class BloomDimFilterSqlTest extends BaseCalciteQueryTest
     );
   }
 
-  @Ignore("this test is for comparison with testBloomFilterBigNoParam")
+  @Disabled("this test is for comparison with testBloomFilterBigNoParam")
   @Test
   public void testBloomFilterBigParameter() throws IOException
   {
@@ -300,8 +313,7 @@ public class BloomDimFilterSqlTest extends BaseCalciteQueryTest
         ImmutableList.of(
             new Object[]{6L}
         ),
-        // there are no empty strings in the druid expression language since empty is coerced into a null when parsed
-        ImmutableList.of(new SqlParameter(SqlType.VARCHAR, NullHandling.defaultStringValue()), new SqlParameter(SqlType.VARCHAR, base64))
+        ImmutableList.of(new SqlParameter(SqlType.VARCHAR, null), new SqlParameter(SqlType.VARCHAR, base64))
     );
   }
 }

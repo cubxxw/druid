@@ -21,13 +21,11 @@ package org.apache.druid.query.aggregation.datasketches.tuple.sql;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.inject.Injector;
 import org.apache.druid.data.input.InputRow;
-import org.apache.druid.guice.DruidInjectorBuilder;
+import org.apache.druid.initialization.DruidModule;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.Druids;
-import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.aggregation.datasketches.tuple.ArrayOfDoublesSketchAggregatorFactory;
@@ -35,6 +33,7 @@ import org.apache.druid.query.aggregation.datasketches.tuple.ArrayOfDoublesSketc
 import org.apache.druid.query.aggregation.datasketches.tuple.ArrayOfDoublesSketchOperations;
 import org.apache.druid.query.aggregation.datasketches.tuple.ArrayOfDoublesSketchSetOpPostAggregator;
 import org.apache.druid.query.aggregation.datasketches.tuple.ArrayOfDoublesSketchToMetricsSumEstimatePostAggregator;
+import org.apache.druid.query.aggregation.datasketches.tuple.sql.ArrayOfDoublesSketchSqlAggregatorTest.ArrayOfDoublesComponentSupplier;
 import org.apache.druid.query.aggregation.post.FieldAccessPostAggregator;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.groupby.GroupByQuery;
@@ -42,22 +41,25 @@ import org.apache.druid.segment.IndexBuilder;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.incremental.IncrementalIndexSchema;
-import org.apache.druid.segment.join.JoinableFactoryWrapper;
 import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.server.SpecificSegmentsQuerySegmentWalker;
 import org.apache.druid.sql.calcite.BaseCalciteQueryTest;
+import org.apache.druid.sql.calcite.SqlTestFrameworkConfig;
+import org.apache.druid.sql.calcite.TempDirProducer;
 import org.apache.druid.sql.calcite.filtration.Filtration;
 import org.apache.druid.sql.calcite.util.CalciteTests;
+import org.apache.druid.sql.calcite.util.DruidModuleCollection;
+import org.apache.druid.sql.calcite.util.SqlTestFramework.StandardComponentSupplier;
 import org.apache.druid.sql.calcite.util.TestDataBuilder;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.partition.LinearShardSpec;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@SqlTestFrameworkConfig.ComponentSupplier(ArrayOfDoublesComponentSupplier.class)
 public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
 {
 
@@ -99,56 +101,59 @@ public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                   .build()
   ).stream().map(TestDataBuilder::createRow).collect(Collectors.toList());
 
-  @Override
-  public void configureGuice(DruidInjectorBuilder builder)
+  public static class ArrayOfDoublesComponentSupplier extends StandardComponentSupplier
   {
-    super.configureGuice(builder);
-    builder.addModule(new ArrayOfDoublesSketchModule());
-  }
+    public ArrayOfDoublesComponentSupplier(TempDirProducer tempFolderProducer)
+    {
+      super(tempFolderProducer);
+    }
 
-  @Override
-  public SpecificSegmentsQuerySegmentWalker createQuerySegmentWalker(
-      final QueryRunnerFactoryConglomerate conglomerate,
-      final JoinableFactoryWrapper joinableFactory,
-      final Injector injector
-  ) throws IOException
-  {
-    ArrayOfDoublesSketchModule.registerSerde();
+    @Override
+    public DruidModule getCoreModule()
+    {
+      return DruidModuleCollection.of(super.getCoreModule(), new ArrayOfDoublesSketchModule());
+    }
 
-    final QueryableIndex index = IndexBuilder.create()
-                                             .tmpDir(temporaryFolder.newFolder())
-                                             .segmentWriteOutMediumFactory(
-                                                 OffHeapMemorySegmentWriteOutMediumFactory.instance()
-                                             )
-                                             .schema(
-                                                 new IncrementalIndexSchema.Builder()
-                                                     .withMetrics(
-                                                         new CountAggregatorFactory("cnt"),
-                                                         new ArrayOfDoublesSketchAggregatorFactory(
-                                                             "tuplesketch_dim2",
-                                                             "dim2",
-                                                             null,
-                                                             ImmutableList.of("m1"),
-                                                             1
-                                                         ),
-                                                         new LongSumAggregatorFactory("m1", "m1")
-                                                     )
-                                                     .withRollup(false)
-                                                     .build()
-                                             )
-                                             .rows(ROWS)
-                                             .buildMMappedIndex();
+    @Override
+    public SpecificSegmentsQuerySegmentWalker addSegmentsToWalker(SpecificSegmentsQuerySegmentWalker walker)
+    {
+      ArrayOfDoublesSketchModule.registerSerde();
 
-    return SpecificSegmentsQuerySegmentWalker.createWalker(injector, conglomerate).add(
-        DataSegment.builder()
-                   .dataSource(DATA_SOURCE)
-                   .interval(index.getDataInterval())
-                   .version("1")
-                   .shardSpec(new LinearShardSpec(0))
-                   .size(0)
-                   .build(),
-        index
-    );
+      final QueryableIndex index = IndexBuilder.create()
+                                               .tmpDir(tempDirProducer.newTempFolder())
+                                               .segmentWriteOutMediumFactory(
+                                                   OffHeapMemorySegmentWriteOutMediumFactory.instance()
+                                               )
+                                               .schema(
+                                                   new IncrementalIndexSchema.Builder()
+                                                       .withMetrics(
+                                                           new CountAggregatorFactory("cnt"),
+                                                           new ArrayOfDoublesSketchAggregatorFactory(
+                                                               "tuplesketch_dim2",
+                                                               "dim2",
+                                                               null,
+                                                               ImmutableList.of("m1"),
+                                                               1
+                                                           ),
+                                                           new LongSumAggregatorFactory("m1", "m1")
+                                                       )
+                                                       .withRollup(false)
+                                                       .build()
+                                               )
+                                               .rows(ROWS)
+                                               .buildMMappedIndex();
+
+      return walker.add(
+          DataSegment.builder()
+                     .dataSource(DATA_SOURCE)
+                     .interval(index.getDataInterval())
+                     .version("1")
+                     .shardSpec(new LinearShardSpec(0))
+                     .size(0)
+                     .build(),
+          index
+      );
+    }
   }
 
   @Test
@@ -387,7 +392,7 @@ public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                       ImmutableList.of(
                           new ArrayOfDoublesSketchToMetricsSumEstimatePostAggregator(
                               "p1",
-                              expressionPostAgg("p0", "null", null)
+                              expressionPostAgg("p0", "null", ColumnType.STRING)
                           ),
                           new ArrayOfDoublesSketchSetOpPostAggregator(
                               "p4",
@@ -395,8 +400,8 @@ public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                               null,
                               null,
                               ImmutableList.of(
-                                  expressionPostAgg("p2", "null", null),
-                                  expressionPostAgg("p3", "null", null)
+                                  expressionPostAgg("p2", "null", ColumnType.STRING),
+                                  expressionPostAgg("p3", "null", ColumnType.STRING)
                               )
                           ),
                           new ArrayOfDoublesSketchSetOpPostAggregator(
@@ -405,7 +410,7 @@ public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                               null,
                               null,
                               ImmutableList.of(
-                                  expressionPostAgg("p5", "null", null),
+                                  expressionPostAgg("p5", "null", ColumnType.STRING),
                                   new FieldAccessPostAggregator("p6", "a1")
                               )
                           ),
@@ -416,7 +421,7 @@ public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                               null,
                               ImmutableList.of(
                                   new FieldAccessPostAggregator("p8", "a1"),
-                                  expressionPostAgg("p9", "null", null)
+                                  expressionPostAgg("p9", "null", ColumnType.STRING)
                               )
                           )
                       )
@@ -425,6 +430,40 @@ public class ArrayOfDoublesSketchSqlAggregatorTest extends BaseCalciteQueryTest
                   .build()
         ),
         expectedResults
+    );
+  }
+
+  @Test
+  public void testNoInputGroupByAll()
+  {
+    cannotVectorize();
+
+    final String sql = "SELECT\n"
+                       + "  DS_TUPLE_DOUBLES(tuplesketch_dim2),\n"
+                       + "  DS_TUPLE_DOUBLES(dim2, m1)\n"
+                       + "FROM druid.foo\n"
+                       + "WHERE dim2 = 'nonexistent'\n"
+                       + "GROUP BY ()";
+
+    testQuery(
+        sql,
+        ImmutableList.of(
+            Druids.newTimeseriesQueryBuilder()
+                  .dataSource(CalciteTests.DATASOURCE1)
+                  .intervals(querySegmentSpec(Filtration.eternity()))
+                  .virtualColumns(expressionVirtualColumn("v0", "'nonexistent'", ColumnType.STRING))
+                  .filters(equality("dim2", "nonexistent", ColumnType.STRING))
+                  .granularity(Granularities.ALL)
+                  .aggregators(
+                      new ArrayOfDoublesSketchAggregatorFactory("a0", "tuplesketch_dim2", null, null, 1),
+                      new ArrayOfDoublesSketchAggregatorFactory("a1", "v0", null, ImmutableList.of("m1"), 1)
+                  )
+                  .context(QUERY_CONTEXT_DEFAULT)
+                  .build()
+        ),
+        ImmutableList.of(
+            new Object[]{"0.0", "0.0"}
+        )
     );
   }
 

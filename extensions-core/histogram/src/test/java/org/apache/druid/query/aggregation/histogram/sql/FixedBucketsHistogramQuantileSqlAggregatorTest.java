@@ -21,14 +21,11 @@ package org.apache.druid.query.aggregation.histogram.sql;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.inject.Injector;
-import org.apache.druid.common.config.NullHandling;
-import org.apache.druid.guice.DruidInjectorBuilder;
+import org.apache.druid.initialization.DruidModule;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.query.Druids;
 import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.QueryDataSource;
-import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
 import org.apache.druid.query.aggregation.FilteredAggregatorFactory;
@@ -36,6 +33,7 @@ import org.apache.druid.query.aggregation.histogram.ApproximateHistogramDruidMod
 import org.apache.druid.query.aggregation.histogram.FixedBucketsHistogram;
 import org.apache.druid.query.aggregation.histogram.FixedBucketsHistogramAggregatorFactory;
 import org.apache.druid.query.aggregation.histogram.QuantilePostAggregator;
+import org.apache.druid.query.aggregation.histogram.sql.FixedBucketsHistogramQuantileSqlAggregatorTest.FixedBucketsHistogramComponentSupplier;
 import org.apache.druid.query.aggregation.post.ArithmeticPostAggregator;
 import org.apache.druid.query.aggregation.post.FieldAccessPostAggregator;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
@@ -46,73 +44,79 @@ import org.apache.druid.segment.IndexBuilder;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.incremental.IncrementalIndexSchema;
-import org.apache.druid.segment.join.JoinableFactoryWrapper;
 import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.server.SpecificSegmentsQuerySegmentWalker;
 import org.apache.druid.sql.calcite.BaseCalciteQueryTest;
+import org.apache.druid.sql.calcite.SqlTestFrameworkConfig;
+import org.apache.druid.sql.calcite.TempDirProducer;
 import org.apache.druid.sql.calcite.filtration.Filtration;
 import org.apache.druid.sql.calcite.util.CalciteTests;
+import org.apache.druid.sql.calcite.util.DruidModuleCollection;
+import org.apache.druid.sql.calcite.util.SqlTestFramework.StandardComponentSupplier;
 import org.apache.druid.sql.calcite.util.TestDataBuilder;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.partition.LinearShardSpec;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.util.List;
 
+@SqlTestFrameworkConfig.ComponentSupplier(FixedBucketsHistogramComponentSupplier.class)
 public class FixedBucketsHistogramQuantileSqlAggregatorTest extends BaseCalciteQueryTest
 {
-  @Override
-  public void configureGuice(DruidInjectorBuilder builder)
+  protected static class FixedBucketsHistogramComponentSupplier extends StandardComponentSupplier
   {
-    super.configureGuice(builder);
-    builder.addModule(new ApproximateHistogramDruidModule());
-  }
+    public FixedBucketsHistogramComponentSupplier(TempDirProducer tempFolderProducer)
+    {
+      super(tempFolderProducer);
+    }
 
-  @Override
-  public SpecificSegmentsQuerySegmentWalker createQuerySegmentWalker(
-      final QueryRunnerFactoryConglomerate conglomerate,
-      final JoinableFactoryWrapper joinableFactory,
-      final Injector injector
-  ) throws IOException
-  {
-    ApproximateHistogramDruidModule.registerSerde();
+    @Override
+    public DruidModule getCoreModule()
+    {
+      return DruidModuleCollection.of(super.getCoreModule(), new ApproximateHistogramDruidModule());
+    }
 
-    final QueryableIndex index = IndexBuilder.create(CalciteTests.getJsonMapper())
-                                             .tmpDir(temporaryFolder.newFolder())
-                                             .segmentWriteOutMediumFactory(OffHeapMemorySegmentWriteOutMediumFactory.instance())
-                                             .schema(
-                                                 new IncrementalIndexSchema.Builder()
-                                                     .withMetrics(
-                                                         new CountAggregatorFactory("cnt"),
-                                                         new DoubleSumAggregatorFactory("m1", "m1"),
-                                                         new FixedBucketsHistogramAggregatorFactory(
-                                                             "fbhist_m1",
-                                                             "m1",
-                                                             20,
-                                                             0,
-                                                             10,
-                                                             FixedBucketsHistogram.OutlierHandlingMode.IGNORE,
-                                                             false
-                                                         )
-                                                     )
-                                                     .withRollup(false)
-                                                     .build()
-                                             )
-                                             .rows(TestDataBuilder.ROWS1)
-                                             .buildMMappedIndex();
+    @Override
+    public SpecificSegmentsQuerySegmentWalker addSegmentsToWalker(SpecificSegmentsQuerySegmentWalker walker)
+    {
+      ApproximateHistogramDruidModule.registerSerde();
 
-    return SpecificSegmentsQuerySegmentWalker.createWalker(injector, conglomerate).add(
-        DataSegment.builder()
-                   .dataSource(CalciteTests.DATASOURCE1)
-                   .interval(index.getDataInterval())
-                   .version("1")
-                   .shardSpec(new LinearShardSpec(0))
-                   .size(0)
-                   .build(),
-        index
-    );
+      final QueryableIndex index = IndexBuilder.create(CalciteTests.getJsonMapper())
+                                               .tmpDir(tempDirProducer.newTempFolder())
+                                               .segmentWriteOutMediumFactory(OffHeapMemorySegmentWriteOutMediumFactory.instance())
+                                               .schema(
+                                                   new IncrementalIndexSchema.Builder()
+                                                       .withMetrics(
+                                                           new CountAggregatorFactory("cnt"),
+                                                           new DoubleSumAggregatorFactory("m1", "m1"),
+                                                           new FixedBucketsHistogramAggregatorFactory(
+                                                               "fbhist_m1",
+                                                               "m1",
+                                                               20,
+                                                               0,
+                                                               10,
+                                                               FixedBucketsHistogram.OutlierHandlingMode.IGNORE,
+                                                               false
+                                                           )
+                                                       )
+                                                       .withRollup(false)
+                                                       .build()
+                                               )
+                                               .rows(TestDataBuilder.ROWS1)
+                                               .buildMMappedIndex();
+
+      return walker.add(
+          DataSegment.builder()
+                     .dataSource(CalciteTests.DATASOURCE1)
+                     .interval(index.getDataInterval())
+                     .version("1")
+                     .shardSpec(new LinearShardSpec(0))
+                     .size(0)
+                     .build(),
+          index
+      );
+    }
   }
 
   @Test
@@ -397,18 +401,7 @@ public class FixedBucketsHistogramQuantileSqlAggregatorTest extends BaseCalciteQ
                   .build()
         ),
         ImmutableList.of(
-            NullHandling.replaceWithDefault()
-            ? new Object[]{
-                0.00833333283662796,
-                0.4166666567325592,
-                2.450000047683716,
-                2.4749999046325684,
-                4.425000190734863,
-                0.4950000047683716,
-                2.498000144958496,
-                0.49950000643730164
-            }
-            : new Object[]{
+            new Object[]{
                 1.0099999904632568,
                 1.5,
                 2.4800000190734863,
@@ -517,12 +510,7 @@ public class FixedBucketsHistogramQuantileSqlAggregatorTest extends BaseCalciteQ
   @Test
   public void testQuantileOnInnerQuery()
   {
-    final List<Object[]> expectedResults;
-    if (NullHandling.replaceWithDefault()) {
-      expectedResults = ImmutableList.of(new Object[]{7.0, 11.940000534057617});
-    } else {
-      expectedResults = ImmutableList.of(new Object[]{5.25, 8.920000076293945});
-    }
+    final List<Object[]> expectedResults = ImmutableList.of(new Object[]{5.25, 8.920000076293945});
 
     testQuery(
         "SELECT AVG(x), APPROX_QUANTILE_FIXED_BUCKETS(x, 0.98, 100, 0.0, 100.0)\n"
@@ -550,8 +538,6 @@ public class FixedBucketsHistogramQuantileSqlAggregatorTest extends BaseCalciteQ
                         .setGranularity(Granularities.ALL)
                         .setAggregatorSpecs(
                             new DoubleSumAggregatorFactory("_a0:sum", "a0"),
-                            NullHandling.replaceWithDefault() ?
-                            new CountAggregatorFactory("_a0:count") :
                             new FilteredAggregatorFactory(
                                 new CountAggregatorFactory("_a0:count"),
                                 notNull("a0")
@@ -601,7 +587,7 @@ public class FixedBucketsHistogramQuantileSqlAggregatorTest extends BaseCalciteQ
                   .dataSource(CalciteTests.DATASOURCE1)
                   .intervals(new MultipleIntervalSegmentSpec(ImmutableList.of(Filtration.eternity())))
                   .granularity(Granularities.ALL)
-                  .filters(numericEquality("dim2", 0L, ColumnType.LONG))
+                  .filters(equality("dim2", 0L, ColumnType.LONG))
                   .aggregators(ImmutableList.of(
                       new FixedBucketsHistogramAggregatorFactory(
                           "a0:agg",

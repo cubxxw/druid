@@ -21,7 +21,7 @@ package org.apache.druid.math.expr;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
-import org.apache.druid.common.config.NullHandling;
+import it.unimi.dsi.fastutil.objects.ObjectAVLTreeSet;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.HumanReadableBytes;
@@ -29,6 +29,7 @@ import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.UOE;
 import org.apache.druid.math.expr.vector.CastToTypeVectorProcessor;
 import org.apache.druid.math.expr.vector.ExprVectorProcessor;
+import org.apache.druid.math.expr.vector.VectorConditionalProcessors;
 import org.apache.druid.math.expr.vector.VectorMathProcessors;
 import org.apache.druid.math.expr.vector.VectorProcessors;
 import org.apache.druid.math.expr.vector.VectorStringProcessors;
@@ -44,6 +45,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -63,6 +65,14 @@ import java.util.stream.Collectors;
 @SuppressWarnings("unused")
 public interface Function extends NamedFunction
 {
+  /**
+   * Possibly convert a {@link Function} into an optimized, possibly not thread-safe {@link Function}.
+   */
+  default Function asSingleThreaded(List<Expr> args, Expr.InputBindingInspector inspector)
+  {
+    return this;
+  }
+
   /**
    * Evaluate the function, given a list of arguments and a set of bindings to provide values for {@link IdentifierExpr}.
    */
@@ -195,7 +205,7 @@ public interface Function extends NamedFunction
     @Override
     protected final ExprEval eval(ExprEval param)
     {
-      if (NullHandling.sqlCompatible() && param.isNumericNull()) {
+      if (param.isNumericNull()) {
         return ExprEval.of(null);
       }
       if (param.type().is(ExprType.LONG)) {
@@ -232,7 +242,8 @@ public interface Function extends NamedFunction
     @Override
     public boolean canVectorize(Expr.InputBindingInspector inspector, List<Expr> args)
     {
-      return inspector.areNumeric(args) && inspector.canVectorize(args);
+      final ExpressionType outputType = args.get(0).getOutputType(inspector);
+      return (outputType == null || outputType.isNumeric()) && inspector.canVectorize(args);
     }
   }
 
@@ -259,7 +270,7 @@ public interface Function extends NamedFunction
     protected final ExprEval eval(ExprEval x, ExprEval y)
     {
       // match the logic of BinaryEvalOpExprBase.eval, except there is no string handling so both strings is also null
-      if (NullHandling.sqlCompatible() && (x.value() == null || y.value() == null)) {
+      if (x.value() == null || y.value() == null) {
         return ExprEval.of(null);
       }
 
@@ -322,7 +333,7 @@ public interface Function extends NamedFunction
     {
       // this is a copy of the logic of BivariateMathFunction for string handling, which itself is a
       // remix of BinaryEvalOpExprBase.eval modified so that string inputs are always null outputs
-      if (NullHandling.sqlCompatible() && (x.value() == null || y.value() == null)) {
+      if (x.value() == null || y.value() == null) {
         return ExprEval.of(null);
       }
 
@@ -351,20 +362,24 @@ public interface Function extends NamedFunction
 
   /**
    * Base class for a 2 variable input {@link Function} whose first argument is a {@link ExprType#STRING} and second
-   * argument is {@link ExprType#LONG}
+   * argument is {@link ExprType#LONG}. These functions return null if either argument is null.
    */
   abstract class StringLongFunction extends BivariateFunction
   {
     @Override
     protected final ExprEval eval(ExprEval x, ExprEval y)
     {
-      if (!x.type().is(ExprType.STRING) || !y.type().is(ExprType.LONG)) {
-        throw validationFailed("needs a STRING as first argument and a LONG as second argument");
+      final String xString = x.asString();
+      if (xString == null) {
+        return ExprEval.of(null);
       }
-      return eval(x.asString(), y.asInt());
+      if (y.isNumericNull()) {
+        return ExprEval.of(null);
+      }
+      return eval(xString, y.asLong());
     }
 
-    protected abstract ExprEval eval(@Nullable String x, int y);
+    protected abstract ExprEval eval(String x, long y);
   }
 
   /**
@@ -509,11 +524,6 @@ public interface Function extends NamedFunction
    */
   abstract class ArraysMergeFunction extends ArraysFunction
   {
-    @Override
-    public Set<Expr> getArrayInputs(List<Expr> args)
-    {
-      return ImmutableSet.copyOf(args);
-    }
 
     @Override
     public boolean hasArrayOutput()
@@ -605,11 +615,10 @@ public interface Function extends NamedFunction
         ExprEval<?> exprEval = expr.eval(bindings);
         ExpressionType exprType = exprEval.type();
 
-        if (isValidType(exprType)) {
-          outputType = ExpressionTypeConversion.function(outputType, exprType);
-        }
-
         if (exprEval.value() != null) {
+          if (isValidType(exprType)) {
+            outputType = ExpressionTypeConversion.function(outputType, exprType);
+          }
           evals.add(exprEval);
         }
       }
@@ -678,7 +687,7 @@ public interface Function extends NamedFunction
     {
       final int radix = args.size() == 1 ? 10 : args.get(1).eval(bindings).asInt();
 
-      final String input = NullHandling.nullToEmptyIfNeeded(args.get(0).eval(bindings).asString());
+      final String input = args.get(0).eval(bindings).asString();
       if (input == null) {
         return ExprEval.ofLong(null);
       }
@@ -784,7 +793,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.abs(inspector, args.get(0));
+      return VectorMathProcessors.abs().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -805,7 +814,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.acos(inspector, args.get(0));
+      return VectorMathProcessors.acos().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -826,7 +835,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.asin(inspector, args.get(0));
+      return VectorMathProcessors.asin().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -847,16 +856,18 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.atan(inspector, args.get(0));
+      return VectorMathProcessors.atan().asProcessor(inspector, args.get(0));
     }
   }
 
   class BitwiseComplement extends UnivariateMathFunction
   {
+    public static final String NAME = "bitwiseComplement";
+
     @Override
     public String name()
     {
-      return "bitwiseComplement";
+      return NAME;
     }
 
     @Nullable
@@ -875,7 +886,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseComplement(inspector, args.get(0));
+      return VectorMathProcessors.bitwiseComplement().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -907,7 +918,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseConvertLongBitsToDouble(inspector, args.get(0));
+      return VectorMathProcessors.bitwiseConvertLongBitsToDouble().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -939,7 +950,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseConvertDoubleToLongBits(inspector, args.get(0));
+      return VectorMathProcessors.bitwiseConvertDoubleToLongBits().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -960,7 +971,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseAnd(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.bitwiseAnd().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -981,7 +992,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseOr(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.bitwiseOr().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1002,7 +1013,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseShiftLeft(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.bitwiseShiftLeft().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1023,7 +1034,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseShiftRight(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.bitwiseShiftRight().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1044,7 +1055,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.bitwiseXor(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.bitwiseXor().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1065,7 +1076,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.cbrt(inspector, args.get(0));
+      return VectorMathProcessors.cbrt().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1086,7 +1097,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.ceil(inspector, args.get(0));
+      return VectorMathProcessors.ceil().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1107,7 +1118,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.cos(inspector, args.get(0));
+      return VectorMathProcessors.cos().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1128,7 +1139,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.cosh(inspector, args.get(0));
+      return VectorMathProcessors.cosh().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1149,7 +1160,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.cot(inspector, args.get(0));
+      return VectorMathProcessors.cot().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1161,16 +1172,6 @@ public interface Function extends NamedFunction
     public String name()
     {
       return NAME;
-    }
-
-    @Nullable
-    @Override
-    public ExpressionType getOutputType(Expr.InputBindingInspector inspector, List<Expr> args)
-    {
-      return ExpressionTypeConversion.function(
-          args.get(0).getOutputType(inspector),
-          args.get(1).getOutputType(inspector)
-      );
     }
 
     @Override
@@ -1234,7 +1235,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.longDivide(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.longDivide().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1255,7 +1256,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.exp(inspector, args.get(0));
+      return VectorMathProcessors.exp().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1276,7 +1277,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.expm1(inspector, args.get(0));
+      return VectorMathProcessors.expm1().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1297,7 +1298,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.floor(inspector, args.get(0));
+      return VectorMathProcessors.floor().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1325,7 +1326,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.getExponent(inspector, args.get(0));
+      return VectorMathProcessors.getExponent().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1346,7 +1347,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.log(inspector, args.get(0));
+      return VectorMathProcessors.log().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1367,7 +1368,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.log10(inspector, args.get(0));
+      return VectorMathProcessors.log10().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1388,7 +1389,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.log1p(inspector, args.get(0));
+      return VectorMathProcessors.log1p().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1409,7 +1410,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.nextUp(inspector, args.get(0));
+      return VectorMathProcessors.nextUp().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1430,7 +1431,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.rint(inspector, args.get(0));
+      return VectorMathProcessors.rint().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1453,7 +1454,7 @@ public interface Function extends NamedFunction
     {
       ExprEval value1 = args.get(0).eval(bindings);
 
-      if (NullHandling.sqlCompatible() && value1.isNumericNull()) {
+      if (value1.isNumericNull()) {
         return ExprEval.of(null);
       }
 
@@ -1541,7 +1542,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.signum(inspector, args.get(0));
+      return VectorMathProcessors.signum().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1562,7 +1563,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.sin(inspector, args.get(0));
+      return VectorMathProcessors.sin().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1583,7 +1584,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.sinh(inspector, args.get(0));
+      return VectorMathProcessors.sinh().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1604,7 +1605,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.sqrt(inspector, args.get(0));
+      return VectorMathProcessors.sqrt().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1625,7 +1626,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.tan(inspector, args.get(0));
+      return VectorMathProcessors.tan().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1646,7 +1647,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.tanh(inspector, args.get(0));
+      return VectorMathProcessors.tanh().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1667,7 +1668,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.toDegrees(inspector, args.get(0));
+      return VectorMathProcessors.toDegrees().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1688,7 +1689,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.toRadians(inspector, args.get(0));
+      return VectorMathProcessors.toRadians().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1709,7 +1710,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.ulp(inspector, args.get(0));
+      return VectorMathProcessors.ulp().asProcessor(inspector, args.get(0));
     }
   }
 
@@ -1730,7 +1731,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.atan2(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.atan2().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1751,7 +1752,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.copySign(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.copySign().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1772,7 +1773,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.hypot(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.hypot().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1793,7 +1794,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.remainder(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.remainder().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1820,7 +1821,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.max(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.max().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1847,7 +1848,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.min(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.min().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1868,7 +1869,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.nextAfter(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.nextAfter().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1889,7 +1890,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.doublePower(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.doublePower().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1911,7 +1912,7 @@ public interface Function extends NamedFunction
     @Override
     protected ExprEval eval(ExprEval x, ExprEval y)
     {
-      if (NullHandling.sqlCompatible() && (x.value() == null || y.value() == null)) {
+      if (x.value() == null || y.value() == null) {
         return ExprEval.of(null);
       }
 
@@ -1933,7 +1934,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorMathProcessors.scalb(inspector, args.get(0), args.get(1));
+      return VectorMathProcessors.scalb().asProcessor(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -1948,7 +1949,7 @@ public interface Function extends NamedFunction
     @Override
     protected ExprEval eval(ExprEval x, ExprEval y)
     {
-      if (NullHandling.sqlCompatible() && x.value() == null) {
+      if (x.value() == null) {
         return ExprEval.of(null);
       }
       ExpressionType castTo;
@@ -2295,18 +2296,6 @@ public interface Function extends NamedFunction
       return ExprEval.ofLongBoolean(!super.apply(args, bindings).asBoolean());
     }
 
-    @Override
-    public void validateArguments(List<Expr> args)
-    {
-      validationHelperCheckArgumentCount(args, 2);
-    }
-
-    @Nullable
-    @Override
-    public ExpressionType getOutputType(Expr.InputBindingInspector inspector, List<Expr> args)
-    {
-      return ExpressionType.LONG;
-    }
   }
 
   /**
@@ -2564,7 +2553,7 @@ public interface Function extends NamedFunction
     @Override
     public <T> ExprVectorProcessor<T> asVectorProcessor(Expr.VectorInputBindingInspector inspector, List<Expr> args)
     {
-      return VectorProcessors.nvl(inspector, args.get(0), args.get(1));
+      return VectorConditionalProcessors.nvl(inspector, args.get(0), args.get(1));
     }
   }
 
@@ -2583,7 +2572,7 @@ public interface Function extends NamedFunction
         return ExprEval.of(null);
       } else {
         // Pass first argument in to the constructor to provide StringBuilder a little extra sizing hint.
-        String first = NullHandling.nullToEmptyIfNeeded(args.get(0).eval(bindings).asString());
+        String first = args.get(0).eval(bindings).asString();
         if (first == null) {
           // Result of concatenation is null if any of the Values is null.
           // e.g. 'select CONCAT(null, "abc") as c;' will return null as per Standard SQL spec.
@@ -2591,7 +2580,7 @@ public interface Function extends NamedFunction
         }
         final StringBuilder builder = new StringBuilder(first);
         for (int i = 1; i < args.size(); i++) {
-          final String s = NullHandling.nullToEmptyIfNeeded(args.get(i).eval(bindings).asString());
+          final String s = args.get(i).eval(bindings).asString();
           if (s == null) {
             // Result of concatenation is null if any of the Values is null.
             // e.g. 'select CONCAT(null, "abc") as c;' will return null as per Standard SQL spec.
@@ -2673,7 +2662,7 @@ public interface Function extends NamedFunction
     @Override
     public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
-      final String formatString = NullHandling.nullToEmptyIfNeeded(args.get(0).eval(bindings).asString());
+      final String formatString = args.get(0).eval(bindings).asString();
 
       if (formatString == null) {
         return ExprEval.of(null);
@@ -2712,8 +2701,8 @@ public interface Function extends NamedFunction
     @Override
     public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
-      final String haystack = NullHandling.nullToEmptyIfNeeded(args.get(0).eval(bindings).asString());
-      final String needle = NullHandling.nullToEmptyIfNeeded(args.get(1).eval(bindings).asString());
+      final String haystack = args.get(0).eval(bindings).asString();
+      final String needle = args.get(1).eval(bindings).asString();
 
       if (haystack == null || needle == null) {
         return ExprEval.of(null);
@@ -2772,9 +2761,9 @@ public interface Function extends NamedFunction
           return ExprEval.of(arg.substring(index));
         }
       } else {
-        // If starting index of substring is greater then the length of string, the result will be a zero length string.
-        // e.g. 'select substring("abc", 4,5) as c;' will return an empty string
-        return ExprEval.of(NullHandling.defaultStringValue());
+        // this is a behavior mismatch with SQL SUBSTRING to be consistent with SubstringDimExtractionFn
+        // In SQL, something like 'select substring("abc", 4,5) as c;' will return an empty string
+        return ExprEval.of(null);
       }
     }
 
@@ -2808,16 +2797,14 @@ public interface Function extends NamedFunction
     }
 
     @Override
-    protected ExprEval eval(@Nullable String x, int y)
+    protected ExprEval eval(String x, long y)
     {
-      if (y < 0) {
+      int yInt = (int) y;
+      if (y < 0 || yInt != y) {
         throw validationFailed("needs a positive integer as the second argument");
       }
-      if (x == null) {
-        return ExprEval.of(null);
-      }
       int len = x.length();
-      return ExprEval.of(y < len ? x.substring(len - y) : x);
+      return ExprEval.of(y < len ? x.substring(len - yInt) : x);
     }
   }
 
@@ -2837,15 +2824,13 @@ public interface Function extends NamedFunction
     }
 
     @Override
-    protected ExprEval eval(@Nullable String x, int y)
+    protected ExprEval eval(String x, long y)
     {
-      if (y < 0) {
-        throw validationFailed("needs a postive integer as second argument");
+      int yInt = (int) y;
+      if (yInt < 0 || yInt != y) {
+        throw validationFailed("needs a positive integer as the second argument");
       }
-      if (x == null) {
-        return ExprEval.of(null);
-      }
-      return ExprEval.of(y < x.length() ? x.substring(0, y) : x);
+      return ExprEval.of(y < x.length() ? x.substring(0, yInt) : x);
     }
   }
 
@@ -2861,10 +2846,10 @@ public interface Function extends NamedFunction
     public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
       final String arg = args.get(0).eval(bindings).asString();
-      final String pattern = NullHandling.nullToEmptyIfNeeded(args.get(1).eval(bindings).asString());
-      final String replacement = NullHandling.nullToEmptyIfNeeded(args.get(2).eval(bindings).asString());
+      final String pattern = args.get(1).eval(bindings).asString();
+      final String replacement = args.get(2).eval(bindings).asString();
       if (arg == null) {
-        return ExprEval.of(NullHandling.defaultStringValue());
+        return ExprEval.of(null);
       }
       return ExprEval.of(StringUtils.replace(arg, pattern, replacement));
     }
@@ -2896,7 +2881,7 @@ public interface Function extends NamedFunction
     {
       final String arg = args.get(0).eval(bindings).asString();
       if (arg == null) {
-        return ExprEval.of(NullHandling.defaultStringValue());
+        return ExprEval.of(null);
       }
       return ExprEval.of(StringUtils.toLowerCase(arg));
     }
@@ -2928,7 +2913,7 @@ public interface Function extends NamedFunction
     {
       final String arg = args.get(0).eval(bindings).asString();
       if (arg == null) {
-        return ExprEval.of(NullHandling.defaultStringValue());
+        return ExprEval.of(null);
       }
       return ExprEval.of(StringUtils.toUpperCase(arg));
     }
@@ -2969,7 +2954,7 @@ public interface Function extends NamedFunction
         throw validationFailed("needs a STRING argument but got %s instead", param.type());
       }
       final String arg = param.asString();
-      return ExprEval.of(arg == null ? NullHandling.defaultStringValue() : new StringBuilder(arg).reverse().toString());
+      return ExprEval.of(arg == null ? null : new StringBuilder(arg).reverse().toString());
     }
   }
 
@@ -2989,12 +2974,13 @@ public interface Function extends NamedFunction
     }
 
     @Override
-    protected ExprEval eval(String x, int y)
+    protected ExprEval eval(String x, long y)
     {
-      if (x == null) {
-        return ExprEval.of(null);
+      int yInt = (int) y;
+      if (yInt != y) {
+        throw validationFailed("needs an integer as the second argument");
       }
-      return ExprEval.of(y < 1 ? NullHandling.defaultStringValue() : StringUtils.repeat(x, y));
+      return ExprEval.of(y < 1 ? null : StringUtils.repeat(x, yInt));
     }
   }
 
@@ -3016,7 +3002,7 @@ public interface Function extends NamedFunction
       if (base == null || pad == null) {
         return ExprEval.of(null);
       } else {
-        return ExprEval.of(len == 0 ? NullHandling.defaultStringValue() : StringUtils.lpad(base, len, pad));
+        return ExprEval.of(len == 0 ? null : StringUtils.lpad(base, len, pad));
       }
 
     }
@@ -3053,7 +3039,7 @@ public interface Function extends NamedFunction
       if (base == null || pad == null) {
         return ExprEval.of(null);
       } else {
-        return ExprEval.of(len == 0 ? NullHandling.defaultStringValue() : StringUtils.rpad(base, len, pad));
+        return ExprEval.of(len == 0 ? null : StringUtils.rpad(base, len, pad));
       }
 
     }
@@ -3243,6 +3229,67 @@ public interface Function extends NamedFunction
     }
   }
 
+  /**
+   * Primarily internal helper function used to coerce null, [], and [null] into [null], similar to the logic done
+   * by {@link org.apache.druid.segment.virtual.ExpressionSelectors#supplierFromDimensionSelector} when the 3rd
+   * argument is true, which is done when implicitly mapping scalar functions over mvd values.
+   */
+  class MultiValueStringHarmonizeNullsFunction implements Function
+  {
+    @Override
+    public String name()
+    {
+      return "mv_harmonize_nulls";
+    }
+
+    @Override
+    public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+    {
+      final ExprEval eval = args.get(0).eval(bindings).castTo(ExpressionType.STRING_ARRAY);
+      if (eval.value() == null || eval.asArray().length == 0) {
+        return ExprEval.ofArray(ExpressionType.STRING_ARRAY, new Object[]{null});
+      }
+      return eval;
+    }
+
+    @Override
+    public void validateArguments(List<Expr> args)
+    {
+      validationHelperCheckArgumentCount(args, 1);
+    }
+
+    @Nullable
+    @Override
+    public ExpressionType getOutputType(Expr.InputBindingInspector inspector, List<Expr> args)
+    {
+      return ExpressionType.STRING_ARRAY;
+    }
+
+    @Override
+    public boolean hasArrayInputs()
+    {
+      return true;
+    }
+
+    @Override
+    public boolean hasArrayOutput()
+    {
+      return true;
+    }
+
+    @Override
+    public Set<Expr> getScalarInputs(List<Expr> args)
+    {
+      return Collections.emptySet();
+    }
+
+    @Override
+    public Set<Expr> getArrayInputs(List<Expr> args)
+    {
+      return ImmutableSet.copyOf(args);
+    }
+  }
+
   class ArrayToMultiValueStringFunction implements Function
   {
     @Override
@@ -3306,31 +3353,24 @@ public interface Function extends NamedFunction
     @Override
     public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
-      // this is copied from 'BaseMapFunction.applyMap', need to find a better way to consolidate, or construct arrays,
-      // or.. something...
       final int length = args.size();
       Object[] out = new Object[length];
 
-      ExpressionType arrayType = null;
-
+      ExpressionType arrayElementType = null;
+      final ExprEval[] outEval = new ExprEval[length];
       for (int i = 0; i < length; i++) {
-        ExprEval<?> evaluated = args.get(i).eval(bindings);
-        arrayType = setArrayOutput(arrayType, out, i, evaluated);
+        outEval[i] = args.get(i).eval(bindings);
+        if (outEval[i].value() != null) {
+          arrayElementType = ExpressionTypeConversion.leastRestrictiveType(arrayElementType, outEval[i].type());
+        }
       }
-
-      return ExprEval.ofArray(arrayType, out);
-    }
-
-    @Override
-    public Set<Expr> getScalarInputs(List<Expr> args)
-    {
-      return ImmutableSet.copyOf(args);
-    }
-
-    @Override
-    public Set<Expr> getArrayInputs(List<Expr> args)
-    {
-      return Collections.emptySet();
+      if (arrayElementType == null) {
+        arrayElementType = ExpressionType.LONG;
+      }
+      for (int i = 0; i < length; i++) {
+        out[i] = outEval[i].castTo(arrayElementType).value();
+      }
+      return ExprEval.ofArray(ExpressionTypeFactory.getInstance().ofArray(arrayElementType), out);
     }
 
     @Override
@@ -3354,28 +3394,6 @@ public interface Function extends NamedFunction
         type = ExpressionTypeConversion.leastRestrictiveType(type, arg.getOutputType(inspector));
       }
       return type == null ? null : ExpressionTypeFactory.getInstance().ofArray(type);
-    }
-
-    /**
-     * Set an array element to the output array, checking for null if the array is numeric. If the type of the evaluated
-     * array element does not match the array element type, this method will attempt to call {@link ExprEval#castTo}
-     * to the array element type, else will set the element as is. If the type of the array is unknown, it will be
-     * detected and defined from the first element. Returns the type of the array, which will be identical to the input
-     * type, unless the input type was null.
-     */
-    static ExpressionType setArrayOutput(@Nullable ExpressionType arrayType, Object[] out, int i, ExprEval evaluated)
-    {
-      if (arrayType == null) {
-        arrayType = ExpressionTypeFactory.getInstance().ofArray(evaluated.type());
-      }
-      if (arrayType.getElementType().isNumeric() && evaluated.isNumericNull()) {
-        out[i] = null;
-      } else if (!evaluated.asArrayType().equals(arrayType)) {
-        out[i] = evaluated.castTo((ExpressionType) arrayType.getElementType()).value();
-      } else {
-        out[i] = evaluated.value();
-      }
-      return arrayType;
     }
   }
 
@@ -3467,12 +3485,6 @@ public interface Function extends NamedFunction
     }
 
     @Override
-    public Set<Expr> getScalarInputs(List<Expr> args)
-    {
-      return ImmutableSet.copyOf(args);
-    }
-
-    @Override
     public boolean hasArrayOutput()
     {
       return true;
@@ -3529,7 +3541,7 @@ public interface Function extends NamedFunction
       final Object[] array = arrayExpr.asArray();
       final int position = scalarExpr.asInt();
 
-      if (array.length > position) {
+      if (array.length > position && position >= 0) {
         return ExprEval.ofType(arrayExpr.elementType(), array[position]);
       }
       return ExprEval.of(null);
@@ -3557,7 +3569,7 @@ public interface Function extends NamedFunction
       final Object[] array = arrayExpr.asArray();
       final int position = scalarExpr.asInt() - 1;
 
-      if (array.length > position) {
+      if (array.length > position && position >= 0) {
         return ExprEval.ofType(arrayExpr.elementType(), array[position]);
       }
       return ExprEval.of(null);
@@ -3595,7 +3607,7 @@ public interface Function extends NamedFunction
               break;
             }
           }
-          return index < 0 ? ExprEval.ofLong(NullHandling.replaceWithDefault() ? -1 : null) : ExprEval.ofLong(index);
+          return index < 0 ? ExprEval.ofLong(null) : ExprEval.ofLong(index);
         default:
           throw validationFailed(
               "second argument must be a a scalar type but got %s instead",
@@ -3636,13 +3648,136 @@ public interface Function extends NamedFunction
             }
           }
           return index < 0
-                 ? ExprEval.ofLong(NullHandling.replaceWithDefault() ? -1 : null)
+                 ? ExprEval.ofLong(null)
                  : ExprEval.ofLong(index + 1);
         default:
           throw validationFailed(
               "second argument must be a a scalar type but got %s instead",
               scalarExpr.type()
           );
+      }
+    }
+  }
+
+  class ScalarInArrayFunction extends ArrayScalarFunction
+  {
+    private static final int SCALAR_ARG = 0;
+    private static final int ARRAY_ARG = 1;
+
+    @Override
+    public String name()
+    {
+      return "scalar_in_array";
+    }
+
+    @Nullable
+    @Override
+    public ExpressionType getOutputType(Expr.InputBindingInspector inspector, List<Expr> args)
+    {
+      return ExpressionType.LONG;
+    }
+
+    @Override
+    Expr getScalarArgument(List<Expr> args)
+    {
+      return args.get(SCALAR_ARG);
+    }
+
+    @Override
+    Expr getArrayArgument(List<Expr> args)
+    {
+      return args.get(ARRAY_ARG);
+    }
+
+    @Override
+    ExprEval doApply(ExprEval arrayEval, ExprEval scalarEval)
+    {
+      final Object[] array = arrayEval.asArray();
+      if (array == null) {
+        return ExprEval.ofLong(null);
+      }
+
+      if (scalarEval.value() == null) {
+        return Arrays.asList(array).contains(null) ? ExprEval.ofLongBoolean(true) : ExprEval.ofLong(null);
+      }
+
+      final ExpressionType matchType = arrayEval.elementType();
+      final ExprEval<?> scalarEvalForComparison = ExprEval.castForEqualityComparison(scalarEval, matchType);
+
+      if (scalarEvalForComparison == null) {
+        return ExprEval.ofLongBoolean(false);
+      } else {
+        return ExprEval.ofLongBoolean(Arrays.asList(array).contains(scalarEvalForComparison.value()));
+      }
+    }
+
+    @Override
+    public Function asSingleThreaded(List<Expr> args, Expr.InputBindingInspector inspector)
+    {
+      if (args.get(ARRAY_ARG).isLiteral()) {
+        final ExpressionType lhsType = args.get(SCALAR_ARG).getOutputType(inspector);
+        if (lhsType == null) {
+          return this;
+        }
+
+        final ExprEval<?> arrayEval = args.get(ARRAY_ARG).eval(InputBindings.nilBindings());
+        final Object[] arrayValues = arrayEval.asArray();
+
+        if (arrayValues == null) {
+          return WithNullArray.INSTANCE;
+        } else {
+          final Set<Object> matchValues = new HashSet<>(Arrays.asList(arrayValues));
+          final ExpressionType matchType = arrayEval.elementType();
+          return new WithConstantArray(matchValues, matchType);
+        }
+      }
+      return this;
+    }
+
+    /**
+     * Specialization of {@link ScalarInArrayFunction} for null {@link #ARRAY_ARG}.
+     */
+    private static final class WithNullArray extends ScalarInArrayFunction
+    {
+      private static final WithNullArray INSTANCE = new WithNullArray();
+
+      @Override
+      public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+      {
+        return ExprEval.of(null);
+      }
+    }
+
+    /**
+     * Specialization of {@link ScalarInArrayFunction} for constant, non-null {@link #ARRAY_ARG}.
+     */
+    private static final class WithConstantArray extends ScalarInArrayFunction
+    {
+      private final Set<Object> matchValues;
+      private final ExpressionType matchType;
+
+      public WithConstantArray(Set<Object> matchValues, ExpressionType matchType)
+      {
+        this.matchValues = Preconditions.checkNotNull(matchValues, "matchValues");
+        this.matchType = Preconditions.checkNotNull(matchType, "matchType");
+      }
+
+      @Override
+      public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+      {
+        final ExprEval scalarEval = args.get(SCALAR_ARG).eval(bindings);
+
+        if (scalarEval.value() == null) {
+          return matchValues.contains(null) ? ExprEval.ofLongBoolean(true) : ExprEval.ofLong(null);
+        }
+
+        final ExprEval<?> scalarEvalForComparison = ExprEval.castForEqualityComparison(scalarEval, matchType);
+
+        if (scalarEvalForComparison == null) {
+          return ExprEval.ofLongBoolean(false);
+        } else {
+          return ExprEval.ofLongBoolean(matchValues.contains(scalarEvalForComparison.value()));
+        }
       }
     }
   }
@@ -3757,7 +3892,7 @@ public interface Function extends NamedFunction
     }
   }
 
-  class ArrayContainsFunction extends ArraysFunction
+  class ArrayContainsFunction implements Function
   {
     @Override
     public String name()
@@ -3779,15 +3914,127 @@ public interface Function extends NamedFunction
     }
 
     @Override
-    ExprEval doApply(ExprEval lhsExpr, ExprEval rhsExpr)
+    public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
+      final ExprEval lhsExpr = args.get(0).eval(bindings);
+      final ExprEval rhsExpr = args.get(1).eval(bindings);
+
       final Object[] array1 = lhsExpr.asArray();
-      final Object[] array2 = rhsExpr.asArray();
-      return ExprEval.ofLongBoolean(Arrays.asList(array1).containsAll(Arrays.asList(array2)));
+      if (array1 == null) {
+        return ExprEval.ofLong(null);
+      }
+      ExpressionType array1Type = lhsExpr.asArrayType();
+
+      if (rhsExpr.isArray()) {
+        final Object[] array2 = rhsExpr.castTo(array1Type).asArray();
+        if (array2 == null) {
+          return ExprEval.ofLongBoolean(false);
+        }
+        return ExprEval.ofLongBoolean(Arrays.asList(array1).containsAll(Arrays.asList(array2)));
+      } else {
+        final Object elem = rhsExpr.castTo((ExpressionType) array1Type.getElementType()).value();
+        if (elem == null && rhsExpr.value() != null) {
+          return ExprEval.ofLongBoolean(false);
+        }
+        return ExprEval.ofLongBoolean(Arrays.asList(array1).contains(elem));
+      }
+    }
+
+    @Override
+    public void validateArguments(List<Expr> args)
+    {
+      validationHelperCheckArgumentCount(args, 2);
+    }
+
+    @Override
+    public Set<Expr> getScalarInputs(List<Expr> args)
+    {
+      return Collections.emptySet();
+    }
+
+    @Override
+    public Set<Expr> getArrayInputs(List<Expr> args)
+    {
+      return ImmutableSet.copyOf(args);
+    }
+
+    @Override
+    public boolean hasArrayInputs()
+    {
+      return true;
+    }
+
+    @Override
+    public Function asSingleThreaded(List<Expr> args, Expr.InputBindingInspector inspector)
+    {
+      if (args.get(1).isLiteral()) {
+        final ExpressionType lhsType = args.get(0).getOutputType(inspector);
+        if (lhsType == null || !(lhsType.isPrimitive() || lhsType.isPrimitiveArray())) {
+          return this;
+        }
+        final ExpressionType lhsArrayType = ExpressionType.asArrayType(lhsType);
+        final ExprEval<?> rhsEval = args.get(1).eval(InputBindings.nilBindings());
+        if (rhsEval.isArray()) {
+          final Object[] rhsArray = rhsEval.castTo(lhsArrayType).asArray();
+          return new ContainsConstantArray(rhsArray);
+        } else {
+          final Object val = rhsEval.castTo((ExpressionType) lhsArrayType.getElementType()).value();
+          return new ContainsConstantScalar(val);
+        }
+      }
+      return this;
+    }
+
+    private static final class ContainsConstantArray extends ArrayContainsFunction
+    {
+      @Nullable
+      final Object[] rhsArray;
+
+      public ContainsConstantArray(@Nullable Object[] rhsArray)
+      {
+        this.rhsArray = rhsArray;
+      }
+
+      @Override
+      public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+      {
+        final ExprEval<?> lhsExpr = args.get(0).eval(bindings);
+        final Object[] array1 = lhsExpr.asArray();
+        if (array1 == null) {
+          return ExprEval.ofLong(null);
+        }
+        if (rhsArray == null) {
+          return ExprEval.ofLongBoolean(false);
+        }
+        return ExprEval.ofLongBoolean(Arrays.asList(array1).containsAll(Arrays.asList(rhsArray)));
+      }
+    }
+
+    private static final class ContainsConstantScalar extends ArrayContainsFunction
+    {
+      @Nullable
+      final Object val;
+
+      public ContainsConstantScalar(@Nullable Object val)
+      {
+        this.val = val;
+      }
+
+      @Override
+      public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+      {
+        final ExprEval<?> lhsExpr = args.get(0).eval(bindings);
+
+        final Object[] array1 = lhsExpr.asArray();
+        if (array1 == null) {
+          return ExprEval.ofLong(null);
+        }
+        return ExprEval.ofLongBoolean(Arrays.asList(array1).contains(val));
+      }
     }
   }
 
-  class ArrayOverlapFunction extends ArraysFunction
+  class ArrayOverlapFunction implements Function
   {
     @Override
     public String name()
@@ -3803,15 +4050,110 @@ public interface Function extends NamedFunction
     }
 
     @Override
-    ExprEval doApply(ExprEval lhsExpr, ExprEval rhsExpr)
+    public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
-      final Object[] array1 = lhsExpr.asArray();
-      final List<Object> array2 = Arrays.asList(rhsExpr.asArray());
-      boolean any = false;
-      for (Object check : array1) {
-        any |= array2.contains(check);
+      final ExprEval arrayExpr1 = args.get(0).eval(bindings);
+      final ExprEval arrayExpr2 = args.get(1).eval(bindings);
+
+      final Object[] array1 = arrayExpr1.asArray();
+      if (array1 == null) {
+        return ExprEval.ofLong(null);
       }
-      return ExprEval.ofLongBoolean(any);
+      ExpressionType array1Type = arrayExpr1.asArrayType();
+      final Object[] array2 = arrayExpr2.castTo(array1Type).asArray();
+      if (array2 == null) {
+        return ExprEval.ofLongBoolean(false);
+      }
+      List<Object> asList = Arrays.asList(array2);
+      for (Object check : array1) {
+        if (asList.contains(check)) {
+          return ExprEval.ofLongBoolean(true);
+        }
+      }
+      return ExprEval.ofLongBoolean(false);
+    }
+
+    @Override
+    public void validateArguments(List<Expr> args)
+    {
+      validationHelperCheckArgumentCount(args, 2);
+    }
+
+    @Override
+    public Set<Expr> getScalarInputs(List<Expr> args)
+    {
+      return Collections.emptySet();
+    }
+
+    @Override
+    public Set<Expr> getArrayInputs(List<Expr> args)
+    {
+      return ImmutableSet.copyOf(args);
+    }
+
+    @Override
+    public boolean hasArrayInputs()
+    {
+      return true;
+    }
+
+    @Override
+    public Function asSingleThreaded(List<Expr> args, Expr.InputBindingInspector inspector)
+    {
+      if (args.get(1).isLiteral()) {
+        final ExpressionType lhsType = args.get(0).getOutputType(inspector);
+        if (lhsType == null || !(lhsType.isPrimitive() || lhsType.isPrimitiveArray())) {
+          return this;
+        }
+        final ExpressionType lhsArrayType = ExpressionType.asArrayType(lhsType);
+        final ExprEval<?> rhsEval = args.get(1).eval(InputBindings.nilBindings());
+        final Object[] rhsArray = rhsEval.castTo(lhsArrayType).asArray();
+        if (rhsArray == null) {
+          return new ArrayOverlapFunction()
+          {
+            @Override
+            public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+            {
+              final ExprEval arrayExpr1 = args.get(0).eval(bindings);
+              final Object[] array1 = arrayExpr1.asArray();
+              if (array1 == null) {
+                return ExprEval.ofLong(null);
+              }
+              return ExprEval.ofLongBoolean(false);
+            }
+          };
+        }
+        final Set<Object> set = new ObjectAVLTreeSet<>(lhsArrayType.getElementType().getNullableStrategy());
+        set.addAll(Arrays.asList(rhsArray));
+        return new OverlapConstantArray(set);
+      }
+      return this;
+    }
+
+    private static final class OverlapConstantArray extends ArrayContainsFunction
+    {
+      final Set<Object> set;
+
+      public OverlapConstantArray(Set<Object> set)
+      {
+        this.set = set;
+      }
+
+      @Override
+      public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
+      {
+        final ExprEval<?> lhsExpr = args.get(0).eval(bindings);
+        final Object[] array1 = lhsExpr.asArray();
+        if (array1 == null) {
+          return ExprEval.ofLong(null);
+        }
+        for (Object check : array1) {
+          if (set.contains(check)) {
+            return ExprEval.ofLongBoolean(true);
+          }
+        }
+        return ExprEval.ofLongBoolean(false);
+      }
     }
   }
 
@@ -3897,7 +4239,7 @@ public interface Function extends NamedFunction
     public ExprEval apply(List<Expr> args, Expr.ObjectBinding bindings)
     {
       final ExprEval valueParam = args.get(0).eval(bindings);
-      if (NullHandling.sqlCompatible() && valueParam.isNumericNull()) {
+      if (valueParam.isNumericNull()) {
         return ExprEval.of(null);
       }
 

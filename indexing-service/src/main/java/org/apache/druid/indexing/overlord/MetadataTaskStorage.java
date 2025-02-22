@@ -25,7 +25,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.inject.Inject;
-import org.apache.druid.common.exception.DruidException;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.indexer.TaskInfo;
 import org.apache.druid.indexer.TaskStatus;
 import org.apache.druid.indexer.TaskStatusPlus;
@@ -38,7 +38,6 @@ import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.lifecycle.LifecycleStart;
 import org.apache.druid.java.util.common.lifecycle.LifecycleStop;
 import org.apache.druid.java.util.emitter.EmittingLogger;
-import org.apache.druid.metadata.EntryExistsException;
 import org.apache.druid.metadata.MetadataStorageActionHandler;
 import org.apache.druid.metadata.MetadataStorageActionHandlerFactory;
 import org.apache.druid.metadata.MetadataStorageActionHandlerTypes;
@@ -58,38 +57,24 @@ import java.util.stream.Collectors;
 public class MetadataTaskStorage implements TaskStorage
 {
 
-  private static final MetadataStorageActionHandlerTypes<Task, TaskStatus, TaskAction, TaskLock> TASK_TYPES = new MetadataStorageActionHandlerTypes<Task, TaskStatus, TaskAction, TaskLock>()
+  private static final MetadataStorageActionHandlerTypes<Task, TaskStatus, TaskAction, TaskLock> TASK_TYPES = new MetadataStorageActionHandlerTypes<>()
   {
     @Override
     public TypeReference<Task> getEntryType()
     {
-      return new TypeReference<Task>()
-      {
-      };
+      return new TypeReference<>() {};
     }
 
     @Override
     public TypeReference<TaskStatus> getStatusType()
     {
-      return new TypeReference<TaskStatus>()
-      {
-      };
-    }
-
-    @Override
-    public TypeReference<TaskAction> getLogType()
-    {
-      return new TypeReference<TaskAction>()
-      {
-      };
+      return new TypeReference<>() {};
     }
 
     @Override
     public TypeReference<TaskLock> getLockType()
     {
-      return new TypeReference<TaskLock>()
-      {
-      };
+      return new TypeReference<>() {};
     }
   };
 
@@ -126,7 +111,7 @@ public class MetadataTaskStorage implements TaskStorage
   }
 
   @Override
-  public void insert(final Task task, final TaskStatus status) throws EntryExistsException
+  public void insert(final Task task, final TaskStatus status)
   {
     Preconditions.checkNotNull(task, "task");
     Preconditions.checkNotNull(status, "status");
@@ -318,24 +303,6 @@ public class MetadataTaskStorage implements TaskStorage
             Entry::getValue
         )
     );
-  }
-
-  @Deprecated
-  @Override
-  public <T> void addAuditLog(final Task task, final TaskAction<T> taskAction)
-  {
-    Preconditions.checkNotNull(taskAction, "taskAction");
-
-    log.info("Logging action for task[%s]: %s", task.getId(), taskAction);
-
-    handler.addLog(task.getId(), taskAction);
-  }
-
-  @Deprecated
-  @Override
-  public List<TaskAction> getAuditLogs(final String taskId)
-  {
-    return handler.getLogs(taskId);
   }
 
   private Map<Long, TaskLock> getLocksWithIds(final String taskid)

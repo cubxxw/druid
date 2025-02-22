@@ -26,6 +26,275 @@ The upgrade notes assume that you are upgrading from the Druid version that imme
 
 For the full release notes for a specific version, see the [releases page](https://github.com/apache/druid/releases).
 
+## Announcements
+
+#### Front-coded dictionaries
+
+Front-coded dictionaries reduce storage and improve performance by optimizing for strings where the front part looks similar.
+
+Once this feature is on, you cannot easily downgrade to an earlier version that does not support the feature. 
+
+For more information, see [Migration guide: front-coded dictionaries](./migr-front-coded-dict.md).
+
+If you're already using this feature, you don't need to take any action. 
+
+## 32.0.0
+
+### Incompatible changes
+
+### ANSI-SQL compatibility and query results
+
+Support for the configs that let you maintain older behavior that wasn't ANSI-SQL compliant have been removed:
+
+- `druid.generic.useDefaultValueForNull=true`
+- `druid.expressions.useStrictBooleans=false`
+- `druid.generic.useThreeValueLogicForNativeFilters=false` 
+
+They no longer affect your query results. Only SQL-compliant non-legacy behavior is supported now. 
+
+If the configs are set to the legacy behavior, Druid services will fail to start. 
+
+If you want to continue to get the same results without these settings, you must update your queries or your results will be incorrect after you upgrade.
+
+For more information about how to update your queries, see the [migration guide](https://druid.apache.org/docs/latest/release-info/migr-ansi-sql-null).
+
+[#17568](https://github.com/apache/druid/pull/17568) [#17609](https://github.com/apache/druid/pull/17609)
+
+### Java support
+
+Java support in Druid has been updated:
+
+- Java 8 support has been removed
+- Java 11 support is deprecated
+
+We recommend that you upgrade to Java 17.
+
+[#17466](https://github.com/apache/druid/pull/17466)
+
+### Javascript support
+
+- Javascript tiered broker selector strategy and Javascript filters currently do not work on Java 17.
+
+### Deprecations
+
+### Hadoop-based ingestion
+
+Hadoop-based ingestion is now deprecated. We recommend that you migrate to SQL-based ingestion. 
+
+## 31.0.0
+
+### Upgrade notes
+
+#### Array ingest mode now defaults to array
+
+The SQL-based ingestion query context flag `arrayIngestMode` now defaults to `array` instead of `mvd`. This means that SQL `VARCHAR ARRAY` types is no longer implicitly translated and stored in `VARCHAR` columns, but is instead stored as `VARCHAR ARRAY`. This change permits other array types such as `BIGINT ARRAY` and `DOUBLE ARRAY` to be inserted with MSQ task engine into their respective array column types instead of failing as they do in `mvd` mode.
+
+To continue to store multi-value strings, modify any insert/replace queries to wrap the array types with the `ARRAY_TO_MV` operator.
+
+Validation is in place to prevent mixing `VARCHAR` and `VARCHAR ARRAY` columns in the same table, so any ingestions affected by this change will fail and provide a descriptive error message instead of exhibiting unexpected behavior.
+
+The `arrayIngestMode` option of `none` has been removed. It was introduced prior to the table validation logic as a means for cluster operators to force query writers to explicitly set `array` or `mvd` on their query contexts, but provides little utility in Druid 31.
+
+See the following topics for more information:
+* [Ingest multi-value dimensions](https://druid.apache.org/docs/latest/querying/multi-value-dimensions.md#sql-based-ingestion) for how to ingest multi-value strings.
+* [Ingest arrays](https://druid.apache.org/docs/latest/querying/arrays.md#sql-based-ingestion) for ingesting arrays.
+
+[#16789](https://github.com/apache/druid/pull/16789)
+
+#### Removed task action audit logging
+
+The deprecated task action audit logging has been removed. This change includes the following updates:
+
+- The endpoint `/indexer/v1/task/{taskId}/segments` is no longer supported.
+- Druid doesn't write to or read from the metadata table `druid_taskLog`.
+- Druid ignores the property `druid.indexer.auditlog.enabled`.
+- Druid doesn't emit the metric `task/action/log/time`.
+
+These changes are backward compatible with all existing metadata storage extensions.
+
+[#16309](https://github.com/apache/druid/pull/16309)
+
+#### Removed Firehose and FirehoseFactory
+
+Removed Firehose and FirehoseFactory and remaining implementations.
+Apache deprecated support for Druid firehoses in version 0.17. Support for firehose ingestion was removed in version 26.0.
+
+[#16758](https://github.com/apache/druid/pull/16758)
+
+### Incompatible changes
+
+#### Removed the scan query legacy mode
+
+The native scan query legacy mode has been removed. It was introduced in Druid 0.11 to maintain compatibility during an upgrade from older versions of Druid where the scan query was part of a `contrib` extension.
+
+[#16659](https://github.com/apache/druid/pull/16659)
+
+Hard-coded `"legacy":false` following removal of the legacy mode to prevent error during rolling upgrades or downgrades.
+
+[#16793](https://github.com/apache/druid/pull/16793)
+
+#### ZK-based segment loading
+
+ZK-based segment loading is now disabled. ZK `servedSegmentsPath` was deprecated in Druid 0.7.1. This legacy path has been replaced by `liveSegmentsPath`.
+
+Segment-serving processes such as Peons, Historicals and Indexers no longer create ZK `loadQueuePath` entries. The `druid.zk.paths.loadQueuePath` and `druid.zk.paths.servedSegmentsPath` properties are no longer used.
+
+Move to HTTP-based segment loading first and then perform the version upgrade.
+## 30.0.0
+
+### Upgrade notes
+
+#### Append JsonPath function
+
+The `append` function for JsonPath for ORC format now fails with an exception. Previously, it would run but not append anything.
+
+[#15772](https://github.com/apache/druid/pull/15772)
+
+#### Kinesis ingestion tuning
+
+The following properties have been deprecated as part of simplifying the memory tuning for Kinesis ingestion:
+
+- `recordBufferSize`,  use `recordBufferSizeBytes` instead
+- `maxRecordsPerPoll`, use `maxBytesPerPoll` instead
+
+[#15360](https://github.com/apache/druid/pull/15360)
+
+#### Improved Supervisor rolling restarts
+
+The `stopTaskCount` config now prioritizes stopping older tasks first. As part of this change, you must also explicitly set a value for `stopTaskCount`. It no longer defaults to the same value as `taskCount`.
+
+[#15859](https://github.com/apache/druid/pull/15859)
+
+#### Changes to Coordinator default values
+
+The following are the changes to the default values for the Coordinator service:
+
+* The default value for `druid.coordinator.kill.period` (if unspecified) has changed from `P1D` to the value of `druid.coordinator.period.indexingPeriod`. Operators can choose to override `druid.coordinator.kill.period` and that takes precedence over the default behavior.
+* The default value for the dynamic configuration property `killTaskSlotRatio` has been updated from `1.0` to `0.1`. This ensures that kill tasks take up only one task slot by default instead of consuming all available task slots.
+
+[#16247](https://github.com/apache/druid/pull/16247)
+
+#### `GoogleTaskLogs` upload buffer size
+
+Changed the upload buffer size in `GoogleTaskLogs` to 1 MB instead of 15 MB to allow more uploads in parallel and prevent the Middle Manager service from running out of memory.
+
+[#16236](https://github.com/apache/druid/pull/16236)
+
+### Incompatible changes
+
+#### Changes to `targetDataSource` in EXPLAIN queries
+
+Druid 30.0.0 includes a breaking change that restores the behavior for `targetDataSource` to its 28.0.0 and earlier state, different from Druid 29.0.0 and only 29.0.0. In 29.0.0, `targetDataSource` returns a JSON object that includes the datasource name. In all other versions, `targetDataSource` returns a string containing the name of the datasource.
+
+If you're upgrading from any version other than 29.0.0, there is no change in behavior.
+
+If you are upgrading from 29.0.0, this is an incompatible change.
+
+[#16004](https://github.com/apache/druid/pull/16004)
+
+#### Removed ZooKeeper-based segment loading
+
+ZooKeeper-based segment loading is being removed due to known issues.
+It has been deprecated for several releases.
+Recent improvements to the Druid Coordinator have significantly enhanced performance with HTTP-based segment loading.
+
+[#15705](https://github.com/apache/druid/pull/15705)
+
+#### Removed Coordinator configs
+
+Removed the following Coordinator configs:
+
+* `druid.coordinator.load.timeout`: Not needed as the default value of this parameter (15 minutes) is known to work well for all clusters.
+* `druid.coordinator.loadqueuepeon.type`: Not needed as this value is always `http`.
+* `druid.coordinator.curator.loadqueuepeon.numCallbackThreads`: Not needed as ZooKeeper(curator)-based segment loading isn't an option anymore.
+
+Auto-cleanup of compaction configs of inactive datasources is now enabled by default.
+
+[#15705](https://github.com/apache/druid/pull/15705)
+
+#### Changed `useMaxMemoryEstimates` for Hadoop jobs
+
+The default value of the `useMaxMemoryEstimates` parameter for Hadoop jobs is now `false`.
+
+[#16280](https://github.com/apache/druid/pull/16280)
+
+## 29.0.1
+
+### Incompatible changes
+
+#### Changes to `targetDataSource` in EXPLAIN queries
+
+Druid 29.0.1 includes a breaking change that restores the behavior for `targetDataSource` to its 28.0.0 and earlier state, different from Druid 29.0.0 and only 29.0.0. In 29.0.0, `targetDataSource` returns a JSON object that includes the datasource name. In all other versions, `targetDataSource` returns a string containing the name of the datasource.
+
+If you're upgrading from any version other than 29.0.0, there is no change in behavior.
+
+If you are upgrading from 29.0.0, this is an incompatible change.
+
+[#16004](https://github.com/apache/druid/pull/16004)
+
+## 29.0.0
+
+### Upgrade notes
+
+#### Changed `equals` filter for native queries
+
+The [equality filter](https://druid.apache.org/docs/latest/querying/filters#equality-filter) on mixed type `auto` columns that contain arrays must now be filtered as their presenting type. This means that if any rows are arrays (for example, the segment metadata and `information_schema` reports the type as some array type), then the native queries must also filter as if they are some array type.
+ 
+This change impacts mixed type `auto` columns that contain both scalars and arrays. It doesn't impact SQL, which already has this limitation due to how the type presents itself.
+
+[#15503](https://github.com/apache/druid/pull/15503)
+
+#### Console automatically sets `arrayIngestMode` for MSQ queries
+
+Druid console now configures the `arrayIngestMode` parameter in the data loading flow, and its value can persist across the SQL tab unless manually updated. When loading multi-value dimensions or arrays in the Druid console, note the value of the `arrayIngestMode` parameter to prevent mixing multi-value dimensions and arrays in the same column of a data source.
+
+[#15588](https://github.com/apache/druid/pull/15588)
+
+#### Improved concurrent append and replace (experimental)
+
+You no longer have to manually determine the task lock type for concurrent append and replace (experimental) with the `taskLockType` task context. Instead, Druid can now determine it automatically for you. You can use the context parameter `"useConcurrentLocks": true` for individual tasks and datasources or enable concurrent append and replace at a cluster level using `druid.indexer.task.default.context`.
+
+[#15684](https://github.com/apache/druid/pull/15684)
+
+#### Enabled empty ingest queries
+
+The MSQ task engine now allows empty ingest queries by default. For queries that don't generate any output rows, the MSQ task engine reports zero values for `numTotalRows` and `totalSizeInBytes` instead of null. Previously, ingest queries that produced no data would fail with the `InsertCannotBeEmpty` MSQ fault.
+
+To revert to the original behavior, set the MSQ query parameter `failOnEmptyInsert` to `true`.
+
+[#15495](https://github.com/apache/druid/pull/15495) [#15674](https://github.com/apache/druid/pull/15674)
+
+#### Enabled query request queuing by default when total laning is turned on
+
+When query scheduler threads are less than server HTTP threads, total laning turns on.
+This reserves some HTTP threads for non-query requests such as health checks.
+The total laning previously would reject any query request that exceeds the lane capacity.
+Now, excess requests will instead be queued with a timeout equal to `MIN(Integer.MAX_VALUE, druid.server.http.maxQueryTimeout)`.
+
+[#15440](https://github.com/apache/druid/pull/15440)
+
+#### Changed how empty or null array columns are stored
+
+Columns ingested with the auto column indexer that contain only empty or null arrays are now stored as `ARRAY<LONG\>` instead of `COMPLEX<json\>`.
+
+[#15505](https://github.com/apache/druid/pull/15505)
+
+#### Changed how Druid allocates weekly segments
+
+When the requested granularity is a month or larger but a segment can't be allocated, Druid resorts to day partitioning.
+Unless explicitly specified, Druid skips week-granularity segments for data partitioning because these segments don't align with the end of the month or more coarse-grained intervals.
+
+Previously, if Druid couldn't allocate segments by month, it tried allocating them by week next.
+In the new behavior, Druid skips partitioning by week and goes directly to day. Week segments can only be allocated if the chosen partitioning in the append task is WEEK.
+
+[#15589](https://github.com/apache/druid/pull/15589)
+
+#### Removed the `auto` search strategy
+
+Removed the `auto` search strategy from the native search query. Setting `searchStrategy` to `auto` is now equivalent to `useIndexes`.
+
+[#15550](https://github.com/apache/druid/pull/15550)
+
 ## 28.0.0
 
 ### Upgrade notes

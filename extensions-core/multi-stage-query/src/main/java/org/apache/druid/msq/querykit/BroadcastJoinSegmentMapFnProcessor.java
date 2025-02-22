@@ -38,15 +38,18 @@ import org.apache.druid.msq.indexing.error.MSQException;
 import org.apache.druid.msq.input.ReadableInput;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.InlineDataSource;
+import org.apache.druid.query.JoinAlgorithm;
 import org.apache.druid.query.Query;
 import org.apache.druid.segment.ColumnValueSelector;
 import org.apache.druid.segment.Cursor;
 import org.apache.druid.segment.SegmentReference;
+import org.apache.druid.sql.calcite.planner.PlannerContext;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -80,7 +83,7 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
    * @param channels                         list of input channels
    * @param channelReaders                   list of input channel readers; corresponds one-to-one with "channels"
    * @param memoryReservedForBroadcastJoin   total bytes of frames we are permitted to use; derived from
-   *                                         {@link WorkerMemoryParameters#getBroadcastJoinMemory()}
+   *                                         {@link WorkerMemoryParameters#getBroadcastBufferMemory()}
    */
   public BroadcastJoinSegmentMapFnProcessor(
       final Query<?> query,
@@ -190,7 +193,7 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
 
   private Function<SegmentReference, SegmentReference> createSegmentMapFunction()
   {
-    return inlineChannelData(query.getDataSource()).createSegmentMapFunction(query, new AtomicLong());
+    return inlineChannelData(query.getDataSource()).createSegmentMapFunction(query);
   }
 
   DataSource inlineChannelData(final DataSource originalDataSource)
@@ -242,7 +245,15 @@ public class BroadcastJoinSegmentMapFnProcessor implements FrameProcessor<Functi
         memoryUsed += frame.numBytes();
 
         if (memoryUsed > memoryReservedForBroadcastJoin) {
-          throw new MSQException(new BroadcastTablesTooLargeFault(memoryReservedForBroadcastJoin));
+          throw new MSQException(
+              new BroadcastTablesTooLargeFault(
+                  memoryReservedForBroadcastJoin,
+                  Optional.ofNullable(query)
+                          .map(q -> q.context().getString(PlannerContext.CTX_SQL_JOIN_ALGORITHM))
+                          .map(JoinAlgorithm::fromString)
+                          .orElse(null)
+              )
+          );
         }
 
         addFrame(channelNumber, frame);

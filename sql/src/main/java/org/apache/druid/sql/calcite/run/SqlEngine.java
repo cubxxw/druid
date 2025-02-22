@@ -39,9 +39,11 @@ public interface SqlEngine
   String name();
 
   /**
-   * Whether a feature applies to this engine or not.
+   * Whether a feature applies to this engine or not. Most callers should use
+   * {@link PlannerContext#featureAvailable(EngineFeature)} instead, which also checks feature flags in context
+   * parameters.
    */
-  boolean featureAvailable(EngineFeature feature, PlannerContext plannerContext);
+  boolean featureAvailable(EngineFeature feature);
 
   /**
    * Validates a provided query context. Returns quietly if the context is OK; throws {@link ValidationException}
@@ -55,8 +57,13 @@ public interface SqlEngine
    *
    * @param typeFactory      type factory
    * @param validatedRowType row type from Calcite's validator
+   * @param queryContext     query context, in case that affects the result type
    */
-  RelDataType resultTypeForSelect(RelDataTypeFactory typeFactory, RelDataType validatedRowType);
+  RelDataType resultTypeForSelect(
+      RelDataTypeFactory typeFactory,
+      RelDataType validatedRowType,
+      Map<String, Object> queryContext
+  );
 
   /**
    * SQL row type that would be emitted by the {@link QueryMaker} from {@link #buildQueryMakerForInsert}.
@@ -64,8 +71,13 @@ public interface SqlEngine
    *
    * @param typeFactory      type factory
    * @param validatedRowType row type from Calcite's validator
+   * @param queryContext     query context, in case that affects the result type
    */
-  RelDataType resultTypeForInsert(RelDataTypeFactory typeFactory, RelDataType validatedRowType);
+  RelDataType resultTypeForInsert(
+      RelDataTypeFactory typeFactory,
+      RelDataType validatedRowType,
+      Map<String, Object> queryContext
+  );
 
   /**
    * Create a {@link QueryMaker} for a SELECT query.

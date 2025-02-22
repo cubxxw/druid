@@ -25,7 +25,6 @@ import it.unimi.dsi.fastutil.ints.IntAVLTreeSet;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntSortedSet;
 import it.unimi.dsi.fastutil.ints.IntSortedSets;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.query.QueryUnsupportedException;
 import org.apache.druid.segment.BaseLongColumnValueSelector;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
@@ -41,9 +40,7 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.experimental.runners.Enclosed;
 import org.junit.rules.ExpectedException;
-import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
@@ -52,12 +49,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.IntFunction;
 
-@RunWith(Enclosed.class)
 public class IndexedTableJoinMatcherTest
 {
   private static final int SIZE = 3;
 
-  @RunWith(Enclosed.class)
   public static class ConditionMatcherFactoryTest
   {
     public static class MakeLongProcessorTest extends InitializedNullHandlingTest
@@ -71,10 +66,7 @@ public class IndexedTableJoinMatcherTest
       {
         mocks = MockitoAnnotations.openMocks(this);
 
-        if (NullHandling.sqlCompatible()) {
-          Mockito.doReturn(false).when(selector).isNull();
-        }
-
+        Mockito.doReturn(false).when(selector).isNull();
         Mockito.doReturn(1L).when(selector).getLong();
       }
 
@@ -577,7 +569,7 @@ public class IndexedTableJoinMatcherTest
       {
         final Long l = DimensionHandlerUtils.convertObjectToLong(key);
 
-        if (l == null && NullHandling.sqlCompatible()) {
+        if (l == null) {
           return IntSortedSets.EMPTY_SET;
         } else {
           return IntSortedSets.singleton(Ints.checkedCast((l == null ? 0L : l) + 1));

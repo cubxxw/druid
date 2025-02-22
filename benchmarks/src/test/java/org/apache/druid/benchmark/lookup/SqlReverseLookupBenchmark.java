@@ -20,8 +20,7 @@
 package org.apache.druid.benchmark.lookup;
 
 import com.google.common.collect.ImmutableMap;
-import org.apache.druid.benchmark.query.SqlBenchmark;
-import org.apache.druid.common.config.NullHandling;
+import org.apache.druid.benchmark.query.SqlBaseBenchmark;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
@@ -54,6 +53,7 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 import javax.annotation.Nullable;
+import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -65,10 +65,6 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 5)
 public class SqlReverseLookupBenchmark
 {
-  static {
-    NullHandling.initializeForTests();
-  }
-
   /**
    * Type of lookup to benchmark. All are members of enum {@link LookupBenchmarkUtil.LookupType}.
    */
@@ -111,10 +107,11 @@ public class SqlReverseLookupBenchmark
     final QueryableIndex index =
         segmentGenerator.generate(dataSegment, schemaInfo, IndexSpec.DEFAULT, Granularities.NONE, 1);
 
-    final Pair<PlannerFactory, SqlEngine> sqlSystem = SqlBenchmark.createSqlSystem(
+    final Pair<PlannerFactory, SqlEngine> sqlSystem = SqlBaseBenchmark.createSqlSystem(
         ImmutableMap.of(dataSegment, index),
+        Collections.emptyMap(),
         ImmutableMap.of("benchmark-lookup", lookup),
-        null,
+        SqlBaseBenchmark.BenchmarkStorage.MMAP,
         closer
     );
 
@@ -151,6 +148,29 @@ public class SqlReverseLookupBenchmark
     final String sql = StringUtils.format(
         "SELECT COUNT(*) FROM foo WHERE LOOKUP(dimZipf, 'benchmark-lookup', 'N/A') <> '%s'",
         LookupBenchmarkUtil.makeKeyOrValue(0)
+    );
+    try (final DruidPlanner planner = plannerFactory.createPlannerForTesting(engine, sql, ImmutableMap.of())) {
+      final PlannerResult plannerResult = planner.plan();
+      blackhole.consume(plannerResult);
+    }
+  }
+
+  @Benchmark
+  @BenchmarkMode(Mode.AverageTime)
+  @OutputTimeUnit(TimeUnit.MILLISECONDS)
+  public void planEqualsInsideAndOutsideCase(Blackhole blackhole)
+  {
+    final String sql = StringUtils.format(
+        "SELECT COUNT(*) FROM foo\n"
+        + "WHERE\n"
+        + " CASE WHEN LOOKUP(dimZipf, 'benchmark-lookup', 'N/A') = '%s'\n"
+        + " THEN NULL\n"
+        + " ELSE LOOKUP(dimZipf, 'benchmark-lookup', 'N/A')\n"
+        + " END IN ('%s', '%s', '%s')",
+        LookupBenchmarkUtil.makeKeyOrValue(0),
+        LookupBenchmarkUtil.makeKeyOrValue(1),
+        LookupBenchmarkUtil.makeKeyOrValue(2),
+        LookupBenchmarkUtil.makeKeyOrValue(3)
     );
     try (final DruidPlanner planner = plannerFactory.createPlannerForTesting(engine, sql, ImmutableMap.of())) {
       final PlannerResult plannerResult = planner.plan();

@@ -25,7 +25,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import it.unimi.dsi.fastutil.ints.IntList;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.processor.FrameRowTooLargeException;
+import org.apache.druid.frame.write.InvalidFieldException;
 import org.apache.druid.frame.write.InvalidNullByteException;
 import org.apache.druid.frame.write.UnsupportedColumnTypeException;
 import org.apache.druid.indexing.common.task.batch.TooManyBucketsException;
@@ -137,6 +139,31 @@ public class MSQErrorReport
     return exceptionStackTrace;
   }
 
+  /**
+   * Returns a {@link DruidException} "equivalent" of this instance. This is useful until such time as we can migrate
+   * usages of this class to {@link DruidException}.
+   */
+  public DruidException toDruidException()
+  {
+    final DruidException druidException =
+        error.toDruidException()
+             .withContext("taskId", taskId);
+
+    if (host != null) {
+      druidException.withContext("host", host);
+    }
+
+    if (stageNumber != null) {
+      druidException.withContext("stageNumber", stageNumber);
+    }
+
+    if (exceptionStackTrace != null) {
+      druidException.withContext("exceptionStackTrace", exceptionStackTrace);
+    }
+
+    return druidException;
+  }
+
   @Override
   public boolean equals(Object o)
   {
@@ -182,7 +209,10 @@ public class MSQErrorReport
    * {@link MSQException}. This method walks through the causal chain, and also "knows" about various exception
    * types thrown by other Druid code.
    */
-  public static MSQFault getFaultFromException(@Nullable final Throwable e, @Nullable final ColumnMappings columnMappings)
+  public static MSQFault getFaultFromException(
+      @Nullable final Throwable e,
+      @Nullable final ColumnMappings columnMappings
+  )
   {
     // Unwrap exception wrappers to find an underlying fault. The assumption here is that the topmost recognizable
     // exception should be used to generate the fault code for the entire report.
@@ -231,6 +261,28 @@ public class MSQErrorReport
             invalidNullByteException.getValue(),
             invalidNullByteException.getPosition()
         );
+
+      } else if (cause instanceof InvalidFieldException) {
+        InvalidFieldException invalidFieldException = (InvalidFieldException) cause;
+        String columnName = invalidFieldException.getColumn();
+        if (columnMappings != null) {
+          IntList outputColumnsForQueryColumn = columnMappings.getOutputColumnsForQueryColumn(columnName);
+
+          // outputColumnsForQueryColumn.size should always be 1 due to hasUniqueOutputColumnNames check that is done
+          if (!outputColumnsForQueryColumn.isEmpty()) {
+            int outputColumn = outputColumnsForQueryColumn.getInt(0);
+            columnName = columnMappings.getOutputColumnName(outputColumn);
+          }
+        }
+
+        return new InvalidFieldFault(
+            invalidFieldException.getSource(),
+            columnName,
+            invalidFieldException.getRowNumber(),
+            invalidFieldException.getErrorMsg(),
+            invalidFieldException.getMessage()
+        );
+
       } else if (cause instanceof UnexpectedMultiValueDimensionException) {
         return new QueryRuntimeFault(StringUtils.format(
             "Column [%s] is a multi-value string. Please wrap the column using MV_TO_ARRAY() to proceed further.",

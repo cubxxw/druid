@@ -25,22 +25,29 @@ import {
   SqlExpression,
   SqlType,
   T,
-} from '@druid-toolkit/query';
+} from 'druid-query-toolkit';
 import * as JSONBig from 'json-bigint-native';
 
 import type {
   DimensionSpec,
   IngestionSpec,
   MetricSpec,
+  QueryContext,
   QueryWithContext,
   TimestampSpec,
   Transform,
 } from '../druid-models';
-import { inflateDimensionSpec, NO_SUCH_COLUMN, TIME_COLUMN, upgradeSpec } from '../druid-models';
+import {
+  getArrayMode,
+  inflateDimensionSpec,
+  NO_SUCH_COLUMN,
+  TIME_COLUMN,
+  upgradeSpec,
+} from '../druid-models';
 import { deepGet, filterMap, nonEmptyArray, oneOf } from '../utils';
 
-export function getSpecDatasourceName(spec: Partial<IngestionSpec>): string {
-  return deepGet(spec, 'spec.dataSchema.dataSource') || 'unknown_datasource';
+export function getSpecDatasourceName(spec: Partial<IngestionSpec>): string | undefined {
+  return deepGet(spec, 'spec.dataSchema.dataSource');
 }
 
 function convertFilter(filter: any): SqlExpression {
@@ -73,11 +80,19 @@ export function convertSpecToSql(spec: any): QueryWithContext {
   }
   spec = upgradeSpec(spec, true);
 
-  const context: Record<string, any> = {
-    finalizeAggregations: false,
-    groupByEnableMultiValueUnnesting: false,
-    arrayIngestMode: 'array',
-  };
+  const context: QueryContext = {};
+
+  if (getArrayMode(spec, 'multi-values') === 'arrays') {
+    context.arrayIngestMode = 'array';
+  }
+
+  const forceSegmentSortByTime = deepGet(
+    spec,
+    'spec.dataSchema.dimensionsSpec.forceSegmentSortByTime',
+  );
+  if (typeof forceSegmentSortByTime !== 'undefined') {
+    context.forceSegmentSortByTime = forceSegmentSortByTime;
+  }
 
   const indexSpec = deepGet(spec, 'spec.tuningConfig.indexSpec');
   if (indexSpec) {

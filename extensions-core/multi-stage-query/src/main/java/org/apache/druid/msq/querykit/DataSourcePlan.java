@@ -32,6 +32,7 @@ import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.UOE;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.msq.input.InputSpec;
+import org.apache.druid.msq.input.InputSpecs;
 import org.apache.druid.msq.input.external.ExternalInputSpec;
 import org.apache.druid.msq.input.inline.InlineInputSpec;
 import org.apache.druid.msq.input.lookup.LookupInputSpec;
@@ -46,10 +47,12 @@ import org.apache.druid.msq.querykit.common.SortMergeJoinFrameProcessorFactory;
 import org.apache.druid.query.DataSource;
 import org.apache.druid.query.FilteredDataSource;
 import org.apache.druid.query.InlineDataSource;
+import org.apache.druid.query.JoinAlgorithm;
 import org.apache.druid.query.JoinDataSource;
 import org.apache.druid.query.LookupDataSource;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryDataSource;
+import org.apache.druid.query.RestrictedDataSource;
 import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.UnionDataSource;
 import org.apache.druid.query.UnnestDataSource;
@@ -64,8 +67,6 @@ import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.join.JoinConditionAnalysis;
 import org.apache.druid.sql.calcite.external.ExternalDataSource;
 import org.apache.druid.sql.calcite.parser.DruidSqlInsert;
-import org.apache.druid.sql.calcite.planner.JoinAlgorithm;
-import org.apache.druid.sql.calcite.planner.PlannerContext;
 import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
@@ -88,7 +89,6 @@ public class DataSourcePlan
    * of subqueries.
    */
   private static final Map<String, Object> CONTEXT_MAP_NO_SEGMENT_GRANULARITY = new HashMap<>();
-
   private static final Logger log = new Logger(DataSourcePlan.class);
 
   static {
@@ -124,8 +124,7 @@ public class DataSourcePlan
   /**
    * Build a plan.
    *
-   * @param queryKit         query kit reference for recursive planning
-   * @param queryId          query ID
+   * @param queryKitSpec     reference for recursive planning
    * @param queryContext     query context
    * @param dataSource       datasource to plan
    * @param querySegmentSpec intervals for mandatory pruning. Must be {@link MultipleIntervalSegmentSpec}. The returned
@@ -133,20 +132,16 @@ public class DataSourcePlan
    * @param filter           filter for best-effort pruning. The returned plan may or may not be filtered to this
    *                         filter. Query processing must still apply the filter to generated correct results.
    * @param filterFields     which fields from the filter to consider for pruning, or null to consider all fields.
-   * @param maxWorkerCount   maximum number of workers for subqueries
    * @param minStageNumber   starting stage number for subqueries
    * @param broadcast        whether the plan should broadcast data for this datasource
    */
-  @SuppressWarnings("rawtypes")
   public static DataSourcePlan forDataSource(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final QueryContext queryContext,
       final DataSource dataSource,
       final QuerySegmentSpec querySegmentSpec,
       @Nullable DimFilter filter,
       @Nullable Set<String> filterFields,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
@@ -171,6 +166,14 @@ public class DataSourcePlan
           filterFields,
           broadcast
       );
+    } else if (dataSource instanceof RestrictedDataSource) {
+      return forRestricted(
+          (RestrictedDataSource) dataSource,
+          querySegmentSpecIntervals(querySegmentSpec),
+          filter,
+          filterFields,
+          broadcast
+      );
     } else if (dataSource instanceof ExternalDataSource) {
       checkQuerySegmentSpecIsEternity(dataSource, querySegmentSpec);
       return forExternal((ExternalDataSource) dataSource, broadcast);
@@ -181,78 +184,67 @@ public class DataSourcePlan
       return forLookup((LookupDataSource) dataSource, broadcast);
     } else if (dataSource instanceof FilteredDataSource) {
       return forFilteredDataSource(
-          queryKit,
-          queryId,
+          queryKitSpec,
           queryContext,
           (FilteredDataSource) dataSource,
           querySegmentSpec,
-          maxWorkerCount,
           minStageNumber,
           broadcast
       );
     } else if (dataSource instanceof UnnestDataSource) {
       return forUnnest(
-          queryKit,
-          queryId,
+          queryKitSpec,
           queryContext,
           (UnnestDataSource) dataSource,
           querySegmentSpec,
-          maxWorkerCount,
           minStageNumber,
           broadcast
       );
     } else if (dataSource instanceof QueryDataSource) {
       checkQuerySegmentSpecIsEternity(dataSource, querySegmentSpec);
       return forQuery(
-          queryKit,
-          queryId,
+          queryKitSpec,
           (QueryDataSource) dataSource,
-          maxWorkerCount,
           minStageNumber,
           broadcast
       );
     } else if (dataSource instanceof UnionDataSource) {
       return forUnion(
-          queryKit,
-          queryId,
+          queryKitSpec,
           queryContext,
           (UnionDataSource) dataSource,
           querySegmentSpec,
           filter,
           filterFields,
-          maxWorkerCount,
           minStageNumber,
           broadcast
       );
     } else if (dataSource instanceof JoinDataSource) {
-      final JoinAlgorithm preferredJoinAlgorithm = PlannerContext.getJoinAlgorithm(queryContext);
+      JoinDataSource joinDataSource = (JoinDataSource) dataSource;
+      final JoinAlgorithm preferredJoinAlgorithm = joinDataSource.getJoinAlgorithm();
       final JoinAlgorithm deducedJoinAlgorithm = deduceJoinAlgorithm(
           preferredJoinAlgorithm,
-          ((JoinDataSource) dataSource)
+          joinDataSource
       );
 
       switch (deducedJoinAlgorithm) {
         case BROADCAST:
           return forBroadcastHashJoin(
-              queryKit,
-              queryId,
+              queryKitSpec,
               queryContext,
-              (JoinDataSource) dataSource,
+              joinDataSource,
               querySegmentSpec,
               filter,
               filterFields,
-              maxWorkerCount,
               minStageNumber,
               broadcast
           );
 
         case SORT_MERGE:
           return forSortMergeJoin(
-              queryKit,
-              queryId,
-              (JoinDataSource) dataSource,
+              queryKitSpec,
+              joinDataSource,
               querySegmentSpec,
-              maxWorkerCount,
               minStageNumber,
               broadcast
           );
@@ -289,6 +281,20 @@ public class DataSourcePlan
   public IntSet getBroadcastInputs()
   {
     return broadcastInputs;
+  }
+
+  /**
+   * Figure for {@link StageDefinition#getMaxWorkerCount()} that should be used when processing.
+   */
+  public int getMaxWorkerCount(final QueryKitSpec queryKitSpec)
+  {
+    if (isSingleWorker()) {
+      return 1;
+    } else if (InputSpecs.hasLeafInputs(inputSpecs, broadcastInputs)) {
+      return queryKitSpec.getMaxLeafWorkerCount();
+    } else {
+      return queryKitSpec.getMaxNonLeafWorkerCount();
+    }
   }
 
   /**
@@ -332,20 +338,16 @@ public class DataSourcePlan
 
   /**
    * Checks if the sortMerge algorithm can execute a particular join condition.
-   *
-   * Two checks:
-   * (1) join condition on two tables "table1" and "table2" is of the form
+   * <p>
+   * One check: join condition on two tables "table1" and "table2" is of the form
    * table1.columnA = table2.columnA && table1.columnB = table2.columnB && ....
-   *
-   * (2) join condition uses equals, not IS NOT DISTINCT FROM [sortMerge processor does not currently implement
-   * IS NOT DISTINCT FROM]
    */
   private static boolean canUseSortMergeJoin(JoinConditionAnalysis joinConditionAnalysis)
   {
     return joinConditionAnalysis
         .getEquiConditions()
         .stream()
-        .allMatch(equality -> equality.getLeftExpr().isIdentifier() && !equality.isIncludeNull());
+        .allMatch(equality -> equality.getLeftExpr().isIdentifier());
   }
 
   /**
@@ -367,6 +369,24 @@ public class DataSourcePlan
     return new DataSourcePlan(
         (broadcast && dataSource.isGlobal()) ? dataSource : new InputNumberDataSource(0),
         Collections.singletonList(new TableInputSpec(dataSource.getName(), intervals, filter, filterFields)),
+        broadcast ? IntOpenHashSet.of(0) : IntSets.emptySet(),
+        null
+    );
+  }
+
+  private static DataSourcePlan forRestricted(
+      final RestrictedDataSource dataSource,
+      final List<Interval> intervals,
+      @Nullable final DimFilter filter,
+      @Nullable final Set<String> filterFields,
+      final boolean broadcast
+  )
+  {
+    return new DataSourcePlan(
+        (broadcast && dataSource.isGlobal())
+        ? dataSource
+        : new RestrictedInputNumberDataSource(0, dataSource.getPolicy()),
+        Collections.singletonList(new TableInputSpec(dataSource.getBase().getName(), intervals, filter, filterFields)),
         broadcast ? IntOpenHashSet.of(0) : IntSets.emptySet(),
         null
     );
@@ -418,23 +438,18 @@ public class DataSourcePlan
   }
 
   private static DataSourcePlan forQuery(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final QueryDataSource dataSource,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
   {
-    final QueryDefinition subQueryDef = queryKit.makeQueryDefinition(
-        queryId,
-
+    final QueryDefinition subQueryDef = queryKitSpec.getQueryKit().makeQueryDefinition(
+        queryKitSpec,
         // Subqueries ignore SQL_INSERT_SEGMENT_GRANULARITY, even if set in the context. It's only used for the
         // outermost query, and setting it for the subquery makes us erroneously add bucketing where it doesn't belong.
         dataSource.getQuery().withOverriddenContext(CONTEXT_MAP_NO_SEGMENT_GRANULARITY),
-        queryKit,
-        ShuffleSpecFactories.globalSortWithMaxPartitionCount(maxWorkerCount),
-        maxWorkerCount,
+        ShuffleSpecFactories.globalSortWithMaxPartitionCount(queryKitSpec.getNumPartitionsForShuffle()),
         minStageNumber
     );
 
@@ -449,25 +464,21 @@ public class DataSourcePlan
   }
 
   private static DataSourcePlan forFilteredDataSource(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final QueryContext queryContext,
       final FilteredDataSource dataSource,
       final QuerySegmentSpec querySegmentSpec,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
   {
     final DataSourcePlan basePlan = forDataSource(
-        queryKit,
-        queryId,
+        queryKitSpec,
         queryContext,
         dataSource.getBase(),
         querySegmentSpec,
         null,
         null,
-        maxWorkerCount,
         minStageNumber,
         broadcast
     );
@@ -489,26 +500,22 @@ public class DataSourcePlan
    * Build a plan for Unnest data source
    */
   private static DataSourcePlan forUnnest(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final QueryContext queryContext,
       final UnnestDataSource dataSource,
       final QuerySegmentSpec querySegmentSpec,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
   {
     // Find the plan for base data source by recursing
     final DataSourcePlan basePlan = forDataSource(
-        queryKit,
-        queryId,
+        queryKitSpec,
         queryContext,
         dataSource.getBase(),
         querySegmentSpec,
         null,
         null,
-        maxWorkerCount,
         minStageNumber,
         broadcast
     );
@@ -533,14 +540,12 @@ public class DataSourcePlan
   }
 
   private static DataSourcePlan forUnion(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final QueryContext queryContext,
       final UnionDataSource unionDataSource,
       final QuerySegmentSpec querySegmentSpec,
       @Nullable DimFilter filter,
       @Nullable Set<String> filterFields,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
@@ -548,21 +553,19 @@ public class DataSourcePlan
     // This is done to prevent loss of generality since MSQ can plan any type of DataSource.
     List<DataSource> children = unionDataSource.getDataSources();
 
-    final QueryDefinitionBuilder subqueryDefBuilder = QueryDefinition.builder();
+    final QueryDefinitionBuilder subqueryDefBuilder = QueryDefinition.builder(queryKitSpec.getQueryId());
     final List<DataSource> newChildren = new ArrayList<>();
     final List<InputSpec> inputSpecs = new ArrayList<>();
     final IntSet broadcastInputs = new IntOpenHashSet();
 
     for (DataSource child : children) {
       DataSourcePlan childDataSourcePlan = forDataSource(
-          queryKit,
-          queryId,
+          queryKitSpec,
           queryContext,
           child,
           querySegmentSpec,
           filter,
           filterFields,
-          maxWorkerCount,
           Math.max(minStageNumber, subqueryDefBuilder.getNextStageNumber()),
           broadcast
       );
@@ -586,30 +589,26 @@ public class DataSourcePlan
    * Build a plan for broadcast hash-join.
    */
   private static DataSourcePlan forBroadcastHashJoin(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final QueryContext queryContext,
       final JoinDataSource dataSource,
       final QuerySegmentSpec querySegmentSpec,
       @Nullable final DimFilter filter,
       @Nullable final Set<String> filterFields,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
   {
-    final QueryDefinitionBuilder subQueryDefBuilder = QueryDefinition.builder();
-    final DataSourceAnalysis analysis = dataSource.getAnalysis();
+    final QueryDefinitionBuilder subQueryDefBuilder = QueryDefinition.builder(queryKitSpec.getQueryId());
+    final DataSourceAnalysis analysis = dataSource.getJoinAnalysisForDataSource();
 
     final DataSourcePlan basePlan = forDataSource(
-        queryKit,
-        queryId,
+        queryKitSpec,
         queryContext,
         analysis.getBaseDataSource(),
         querySegmentSpec,
         filter,
         filter == null ? null : DimFilterUtils.onlyBaseFields(filterFields, analysis),
-        maxWorkerCount,
         Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
         broadcast
     );
@@ -622,14 +621,12 @@ public class DataSourcePlan
     for (int i = 0; i < analysis.getPreJoinableClauses().size(); i++) {
       final PreJoinableClause clause = analysis.getPreJoinableClauses().get(i);
       final DataSourcePlan clausePlan = forDataSource(
-          queryKit,
-          queryId,
+          queryKitSpec,
           queryContext,
           clause.getDataSource(),
           new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY),
           null, // Don't push down query filters for right-hand side: needs some work to ensure it works properly.
           null,
-          maxWorkerCount,
           Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
           true // Always broadcast right-hand side of the join.
       );
@@ -645,7 +642,8 @@ public class DataSourcePlan
           clause.getJoinType(),
           // First JoinDataSource (i == 0) involves the base table, so we need to propagate the base table filter.
           i == 0 ? analysis.getJoinBaseTableFilter().orElse(null) : null,
-          dataSource.getJoinableFactoryWrapper()
+          dataSource.getJoinableFactoryWrapper(),
+          clause.getJoinAlgorithm()
       );
       inputSpecs.addAll(clausePlan.getInputSpecs());
       clausePlan.getBroadcastInputs().intStream().forEach(n -> broadcastInputs.add(n + shift));
@@ -659,11 +657,9 @@ public class DataSourcePlan
    * Build a plan for sort-merge join.
    */
   private static DataSourcePlan forSortMergeJoin(
-      final QueryKit queryKit,
-      final String queryId,
+      final QueryKitSpec queryKitSpec,
       final JoinDataSource dataSource,
       final QuerySegmentSpec querySegmentSpec,
-      final int maxWorkerCount,
       final int minStageNumber,
       final boolean broadcast
   )
@@ -676,16 +672,14 @@ public class DataSourcePlan
         SortMergeJoinFrameProcessorFactory.validateCondition(dataSource.getConditionAnalysis())
     );
 
-    final QueryDefinitionBuilder subQueryDefBuilder = QueryDefinition.builder();
+    final QueryDefinitionBuilder subQueryDefBuilder = QueryDefinition.builder(queryKitSpec.getQueryId());
 
     // Plan the left input.
     // We're confident that we can cast dataSource.getLeft() to QueryDataSource, because DruidJoinQueryRel creates
     // subqueries when the join algorithm is sortMerge.
     final DataSourcePlan leftPlan = forQuery(
-        queryKit,
-        queryId,
+        queryKitSpec,
         (QueryDataSource) dataSource.getLeft(),
-        maxWorkerCount,
         Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
         false
     );
@@ -695,10 +689,8 @@ public class DataSourcePlan
     // We're confident that we can cast dataSource.getRight() to QueryDataSource, because DruidJoinQueryRel creates
     // subqueries when the join algorithm is sortMerge.
     final DataSourcePlan rightPlan = forQuery(
-        queryKit,
-        queryId,
+        queryKitSpec,
         (QueryDataSource) dataSource.getRight(),
-        maxWorkerCount,
         Math.max(minStageNumber, subQueryDefBuilder.getNextStageNumber()),
         false
     );
@@ -709,8 +701,9 @@ public class DataSourcePlan
         ((StageInputSpec) Iterables.getOnlyElement(leftPlan.getInputSpecs())).getStageNumber()
     );
 
+    final int hashPartitionCount = queryKitSpec.getNumPartitionsForShuffle();
     final List<KeyColumn> leftPartitionKey = partitionKeys.get(0);
-    leftBuilder.shuffleSpec(new HashShuffleSpec(new ClusterBy(leftPartitionKey, 0), maxWorkerCount));
+    leftBuilder.shuffleSpec(new HashShuffleSpec(new ClusterBy(leftPartitionKey, 0), hashPartitionCount));
     leftBuilder.signature(QueryKitUtils.sortableSignature(leftBuilder.getSignature(), leftPartitionKey));
 
     // Build up the right stage.
@@ -719,7 +712,7 @@ public class DataSourcePlan
     );
 
     final List<KeyColumn> rightPartitionKey = partitionKeys.get(1);
-    rightBuilder.shuffleSpec(new HashShuffleSpec(new ClusterBy(rightPartitionKey, 0), maxWorkerCount));
+    rightBuilder.shuffleSpec(new HashShuffleSpec(new ClusterBy(rightPartitionKey, 0), hashPartitionCount));
     rightBuilder.signature(QueryKitUtils.sortableSignature(rightBuilder.getSignature(), rightPartitionKey));
 
     // Compute join signature.
@@ -747,7 +740,7 @@ public class DataSourcePlan
                                Iterables.getOnlyElement(rightPlan.getInputSpecs())
                            )
                        )
-                       .maxWorkerCount(maxWorkerCount)
+                       .maxWorkerCount(queryKitSpec.getMaxNonLeafWorkerCount())
                        .signature(joinSignatureBuilder.build())
                        .processorFactory(
                            new SortMergeJoinFrameProcessorFactory(
@@ -798,10 +791,10 @@ public class DataSourcePlan
   /**
    * Verify that the provided {@link QuerySegmentSpec} is a {@link MultipleIntervalSegmentSpec} with
    * interval {@link Intervals#ETERNITY}. If not, throw an {@link UnsupportedOperationException}.
-   *
+   * <p>
    * Anywhere this appears is a place that we do not support using the "intervals" parameter of a query
    * (i.e., {@link org.apache.druid.query.BaseQuery#getQuerySegmentSpec()}) for time filtering.
-   *
+   * <p>
    * We don't need to support this for anything that is not {@link DataSourceAnalysis#isTableBased()}, because
    * the SQL layer avoids "intervals" in other cases. See
    * {@link org.apache.druid.sql.calcite.rel.DruidQuery#canUseIntervalFiltering(DataSource)}.

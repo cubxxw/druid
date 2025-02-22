@@ -23,8 +23,6 @@ import org.apache.druid.collections.bitmap.BitmapFactory;
 import org.apache.druid.collections.bitmap.ImmutableBitmap;
 import org.apache.druid.query.filter.DruidObjectPredicate;
 import org.apache.druid.query.filter.DruidPredicateFactory;
-import org.apache.druid.segment.column.ColumnConfig;
-import org.apache.druid.segment.column.ColumnIndexSupplier;
 import org.apache.druid.segment.data.Indexed;
 import org.apache.druid.segment.index.semantic.DruidPredicateIndexes;
 
@@ -38,44 +36,34 @@ public final class IndexedStringDruidPredicateIndexes<TDictionary extends Indexe
   private final BitmapFactory bitmapFactory;
   private final TDictionary dictionary;
   private final Indexed<ImmutableBitmap> bitmaps;
-  private final ColumnConfig columnConfig;
-  private final int numRows;
 
   public IndexedStringDruidPredicateIndexes(
       BitmapFactory bitmapFactory,
       TDictionary dictionary,
-      Indexed<ImmutableBitmap> bitmaps,
-      @Nullable ColumnConfig columnConfig,
-      int numRows
+      Indexed<ImmutableBitmap> bitmaps
   )
   {
     this.bitmapFactory = bitmapFactory;
     this.dictionary = dictionary;
     this.bitmaps = bitmaps;
-    this.columnConfig = columnConfig;
-    this.numRows = numRows;
   }
 
   @Override
   @Nullable
   public BitmapColumnIndex forPredicate(DruidPredicateFactory matcherFactory)
   {
-    if (ColumnIndexSupplier.skipComputingPredicateIndexes(columnConfig, numRows, dictionary.size())) {
-      return null;
-    }
     final DruidObjectPredicate<String> stringPredicate = matcherFactory.makeStringPredicate();
 
-    return new SimpleImmutableBitmapIterableIndex()
+    return new DictionaryScanningBitmapIndex(dictionary.size())
     {
       @Override
       public Iterable<ImmutableBitmap> getBitmapIterable(boolean includeUnknown)
       {
-        return () -> new Iterator<ImmutableBitmap>()
+        return () -> new Iterator<>()
         {
           final Iterator<String> iterator = dictionary.iterator();
-          @Nullable
-          String next = null;
           boolean nextSet = false;
+          int index = -1;
 
           @Override
           public boolean hasNext()
@@ -96,23 +84,17 @@ public final class IndexedStringDruidPredicateIndexes<TDictionary extends Indexe
               }
             }
             nextSet = false;
-            final int idx = dictionary.indexOf(next);
-            if (idx < 0) {
-              return bitmapFactory.makeEmptyImmutableBitmap();
-            }
 
-            final ImmutableBitmap bitmap = bitmaps.get(idx);
+            final ImmutableBitmap bitmap = bitmaps.get(index);
             return bitmap == null ? bitmapFactory.makeEmptyImmutableBitmap() : bitmap;
           }
 
           private void findNext()
           {
             while (!nextSet && iterator.hasNext()) {
-              String nextValue = iterator.next();
+              final String nextValue = iterator.next();
+              index++;
               nextSet = stringPredicate.apply(nextValue).matches(includeUnknown);
-              if (nextSet) {
-                next = nextValue;
-              }
             }
           }
         };

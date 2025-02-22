@@ -20,7 +20,6 @@
 package org.apache.druid.msq.statistics;
 
 import com.google.common.collect.ImmutableList;
-import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.frame.key.ClusterBy;
 import org.apache.druid.frame.key.KeyColumn;
 import org.apache.druid.frame.key.KeyOrder;
@@ -41,11 +40,7 @@ public class DelegateOrMinKeyCollectorTest
 {
   private final ClusterBy clusterBy = new ClusterBy(ImmutableList.of(new KeyColumn("x", KeyOrder.ASCENDING)), 0);
   private final RowSignature signature = RowSignature.builder().add("x", ColumnType.LONG).build();
-  private final Comparator<RowKey> comparator = clusterBy.keyComparator();
-
-  static {
-    NullHandling.initializeForTests();
-  }
+  private final Comparator<RowKey> comparator = clusterBy.keyComparator(signature);
 
   @Test
   public void testEmpty()
@@ -53,7 +48,7 @@ public class DelegateOrMinKeyCollectorTest
     final DelegateOrMinKeyCollector<QuantilesSketchKeyCollector> collector =
         new DelegateOrMinKeyCollectorFactory<>(
             comparator,
-            QuantilesSketchKeyCollectorFactory.create(clusterBy)
+            QuantilesSketchKeyCollectorFactory.create(clusterBy, signature)
         ).newKeyCollector();
 
     Assert.assertTrue(collector.getDelegate().isPresent());
@@ -69,8 +64,8 @@ public class DelegateOrMinKeyCollectorTest
   {
     ClusterBy clusterBy = ClusterBy.none();
     new DelegateOrMinKeyCollector<>(
-        clusterBy.keyComparator(),
-        QuantilesSketchKeyCollectorFactory.create(clusterBy).newKeyCollector(),
+        clusterBy.keyComparator(RowSignature.empty()),
+        QuantilesSketchKeyCollectorFactory.create(clusterBy, RowSignature.empty()).newKeyCollector(),
         RowKey.empty()
     );
   }
@@ -81,7 +76,7 @@ public class DelegateOrMinKeyCollectorTest
     final DelegateOrMinKeyCollector<QuantilesSketchKeyCollector> collector =
         new DelegateOrMinKeyCollectorFactory<>(
             comparator,
-            QuantilesSketchKeyCollectorFactory.create(clusterBy)
+            QuantilesSketchKeyCollectorFactory.create(clusterBy, signature)
         ).newKeyCollector();
 
     RowKey key = createKey(1L);
@@ -100,7 +95,7 @@ public class DelegateOrMinKeyCollectorTest
     final DelegateOrMinKeyCollector<QuantilesSketchKeyCollector> collector =
         new DelegateOrMinKeyCollectorFactory<>(
             comparator,
-            QuantilesSketchKeyCollectorFactory.create(clusterBy)
+            QuantilesSketchKeyCollectorFactory.create(clusterBy, signature)
         ).newKeyCollector();
 
     RowKey key = createKey(1L);
@@ -128,7 +123,7 @@ public class DelegateOrMinKeyCollectorTest
     final DelegateOrMinKeyCollector<QuantilesSketchKeyCollector> collector =
         new DelegateOrMinKeyCollectorFactory<>(
             comparator,
-            QuantilesSketchKeyCollectorFactory.create(clusterBy)
+            QuantilesSketchKeyCollectorFactory.create(clusterBy, signature)
         ).newKeyCollector();
 
     RowKey key = createKey(1L);

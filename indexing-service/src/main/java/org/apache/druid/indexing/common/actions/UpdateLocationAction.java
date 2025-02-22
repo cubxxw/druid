@@ -20,7 +20,6 @@
 package org.apache.druid.indexing.common.actions;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.base.Optional;
@@ -30,7 +29,6 @@ import org.apache.druid.indexing.overlord.TaskRunner;
 
 public class UpdateLocationAction implements TaskAction<Void>
 {
-  @JsonIgnore
   private final TaskLocation taskLocation;
 
   @JsonCreator
@@ -50,9 +48,7 @@ public class UpdateLocationAction implements TaskAction<Void>
   @Override
   public TypeReference<Void> getReturnTypeReference()
   {
-    return new TypeReference<Void>()
-    {
-    };
+    return new TypeReference<>() {};
   }
 
   @Override
@@ -63,12 +59,6 @@ public class UpdateLocationAction implements TaskAction<Void>
       taskRunner.get().updateLocation(task, taskLocation);
     }
     return null;
-  }
-
-  @Override
-  public boolean isAudited()
-  {
-    return true;
   }
 
   @Override

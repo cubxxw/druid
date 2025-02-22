@@ -32,6 +32,7 @@ import org.apache.druid.client.DruidServer;
 import org.apache.druid.client.FilteredServerInventoryView;
 import org.apache.druid.client.FilteringSegmentCallback;
 import org.apache.druid.client.InternalQueryConfig;
+import org.apache.druid.client.QueryableDruidServer;
 import org.apache.druid.client.ServerView;
 import org.apache.druid.client.TimelineServerView;
 import org.apache.druid.client.coordinator.NoopCoordinatorClient;
@@ -51,6 +52,7 @@ import org.apache.druid.segment.incremental.IncrementalIndexSchema;
 import org.apache.druid.segment.join.MapJoinableFactory;
 import org.apache.druid.segment.metadata.AbstractSegmentMetadataCache;
 import org.apache.druid.segment.metadata.AvailableSegmentMetadata;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
 import org.apache.druid.segment.realtime.appenderator.SegmentSchemas;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.server.SpecificSegmentsQuerySegmentWalker;
@@ -61,6 +63,7 @@ import org.apache.druid.server.security.NoopEscalator;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.SegmentId;
 import org.apache.druid.timeline.partition.NumberedShardSpec;
+import org.easymock.Capture;
 import org.easymock.EasyMock;
 import org.junit.After;
 import org.junit.Assert;
@@ -85,7 +88,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
-public class BrokerSegmentMetadataCacheConcurrencyTest extends BrokerSegmentMetadataCacheCommon
+public class BrokerSegmentMetadataCacheConcurrencyTest extends BrokerSegmentMetadataCacheTestBase
 {
   private static final String DATASOURCE = "datasource";
   static final BrokerSegmentMetadataCacheConfig SEGMENT_CACHE_CONFIG_DEFAULT = BrokerSegmentMetadataCacheConfig.create("PT1S");
@@ -141,7 +144,8 @@ public class BrokerSegmentMetadataCacheConcurrencyTest extends BrokerSegmentMeta
         new InternalQueryConfig(),
         new NoopServiceEmitter(),
         new PhysicalDatasourceMetadataFactory(new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()), segmentManager),
-        new NoopCoordinatorClient()
+        new NoopCoordinatorClient(),
+        CentralizedDatasourceSchemaConfig.create()
     )
     {
       @Override
@@ -223,7 +227,7 @@ public class BrokerSegmentMetadataCacheConcurrencyTest extends BrokerSegmentMeta
 
     for (int i = 0; i < 1000; i++) {
       boolean hasTimeline = exec.submit(
-          () -> serverView.getTimeline((new TableDataSource(DATASOURCE)).getAnalysis())
+          () -> serverView.getTimeline((new TableDataSource(DATASOURCE)))
                           .isPresent()
       ).get(100, TimeUnit.MILLISECONDS);
       Assert.assertTrue(hasTimeline);
@@ -257,7 +261,8 @@ public class BrokerSegmentMetadataCacheConcurrencyTest extends BrokerSegmentMeta
         new InternalQueryConfig(),
         new NoopServiceEmitter(),
         new PhysicalDatasourceMetadataFactory(new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()), segmentManager),
-        new NoopCoordinatorClient()
+        new NoopCoordinatorClient(),
+        CentralizedDatasourceSchemaConfig.create()
     )
     {
       @Override
@@ -376,8 +381,9 @@ public class BrokerSegmentMetadataCacheConcurrencyTest extends BrokerSegmentMeta
   {
     DirectDruidClientFactory druidClientFactory = EasyMock.createMock(DirectDruidClientFactory.class);
     DirectDruidClient directDruidClient = EasyMock.mock(DirectDruidClient.class);
-    EasyMock.expect(druidClientFactory.makeDirectClient(EasyMock.anyObject(DruidServer.class)))
-            .andReturn(directDruidClient)
+    Capture<DruidServer> serverCapture = Capture.newInstance();
+    EasyMock.expect(druidClientFactory.make(EasyMock.capture(serverCapture)))
+            .andAnswer(() -> new QueryableDruidServer(serverCapture.getValue(), directDruidClient))
             .anyTimes();
 
     EasyMock.replay(druidClientFactory);

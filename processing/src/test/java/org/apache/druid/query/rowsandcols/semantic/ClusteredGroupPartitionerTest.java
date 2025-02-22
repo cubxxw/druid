@@ -135,6 +135,8 @@ public class ClusteredGroupPartitionerTest extends SemanticTestBase
     RowsAndColumns rac = make(MapOfColumnsRowsAndColumns.fromMap(
         ImmutableMap.of(
             "sorted", new ObjectArrayColumn(new Object[]{null, null, null, 1, 1, 2, 4, 4, 4}, ColumnType.LONG),
+            "col_d", new ObjectArrayColumn(new Object[]{null, null, null, 1.0, 1.0, 2.0, 4.0, 4.0, 4.0}, ColumnType.DOUBLE),
+            "col_f", new ObjectArrayColumn(new Object[]{null, null, null, 1.0f, 1.0f, 2.0f, 4.0f, 4.0f, 4.0f}, ColumnType.FLOAT),
             "unsorted", new IntArrayColumn(new int[]{3, 54, 21, 1, 5, 54, 2, 3, 92})
         )
     ));
@@ -146,18 +148,26 @@ public class ClusteredGroupPartitionerTest extends SemanticTestBase
     List<RowsAndColumnsHelper> expectations = Arrays.asList(
         new RowsAndColumnsHelper()
             .expectColumn("sorted", new Object[]{null, null, null}, ColumnType.LONG)
+            .expectColumn("col_d", new Object[]{null, null, null}, ColumnType.DOUBLE)
+            .expectColumn("col_f", new Object[]{null, null, null}, ColumnType.FLOAT)
             .expectColumn("unsorted", new int[]{3, 54, 21})
             .allColumnsRegistered(),
         new RowsAndColumnsHelper()
             .expectColumn("sorted", new int[]{1, 1})
+            .expectColumn("col_d", new double[]{1.0, 1.0})
+            .expectColumn("col_f", new float[]{1.0f, 1.0f})
             .expectColumn("unsorted", new int[]{1, 5})
             .allColumnsRegistered(),
         new RowsAndColumnsHelper()
             .expectColumn("sorted", new int[]{2})
+            .expectColumn("col_d", new double[]{2.0})
+            .expectColumn("col_f", new float[]{2.0f})
             .expectColumn("unsorted", new int[]{54})
             .allColumnsRegistered(),
         new RowsAndColumnsHelper()
             .expectColumn("sorted", new int[]{4, 4, 4})
+            .expectColumn("col_d", new double[]{4.0, 4.0, 4.0})
+            .expectColumn("col_f", new float[]{4.0f, 4.0f, 4.0f})
             .expectColumn("unsorted", new int[]{2, 3, 92})
             .allColumnsRegistered()
     );

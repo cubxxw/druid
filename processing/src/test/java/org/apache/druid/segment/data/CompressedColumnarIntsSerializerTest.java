@@ -20,6 +20,7 @@
 package org.apache.druid.segment.data;
 
 import com.google.common.base.Function;
+import com.google.common.base.Supplier;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -35,6 +36,8 @@ import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.TmpFileSegmentWriteOutMediumFactory;
 import org.apache.druid.segment.writeout.WriteOutBytes;
 import org.apache.druid.utils.CloseableUtils;
+import org.hamcrest.MatcherAssert;
+import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -150,6 +153,60 @@ public class CompressedColumnarIntsSerializerTest
     }
   }
 
+  @Test
+  public void testLargeColumn() throws IOException
+  {
+    final File columnDir = temporaryFolder.newFolder();
+    final String columnName = "column";
+    final long numRows = 500_000; // enough values that we expect to switch into large-column mode
+
+    try (
+        SegmentWriteOutMedium segmentWriteOutMedium =
+            TmpFileSegmentWriteOutMediumFactory.instance().makeSegmentWriteOutMedium(temporaryFolder.newFolder());
+        FileSmoosher smoosher = new FileSmoosher(columnDir)
+    ) {
+      final Random random = new Random(0);
+      final int fileSizeLimit = 128_000; // limit to 128KB so we switch to large-column mode sooner
+      final CompressedColumnarIntsSerializer serializer = new CompressedColumnarIntsSerializer(
+          columnName,
+          segmentWriteOutMedium,
+          columnName,
+          CompressedColumnarIntsSupplier.MAX_INTS_IN_BUFFER,
+          byteOrder,
+          compressionStrategy,
+          fileSizeLimit,
+          segmentWriteOutMedium.getCloser()
+      );
+      serializer.open();
+
+      for (int i = 0; i < numRows; i++) {
+        serializer.addValue(random.nextInt() ^ Integer.MIN_VALUE);
+      }
+
+      try (SmooshedWriter primaryWriter = smoosher.addWithSmooshedWriter(columnName, serializer.getSerializedSize())) {
+        serializer.writeTo(primaryWriter, smoosher);
+      }
+    }
+
+    try (SmooshedFileMapper smooshMapper = SmooshedFileMapper.load(columnDir)) {
+      MatcherAssert.assertThat(
+          "Number of value parts written", // ensure the column actually ended up multi-part
+          smooshMapper.getInternalFilenames().stream().filter(s -> s.startsWith("column_value_")).count(),
+          Matchers.greaterThan(1L)
+      );
+
+      final Supplier<ColumnarInts> columnSupplier = CompressedColumnarIntsSupplier.fromByteBuffer(
+          smooshMapper.mapFile(columnName),
+          byteOrder,
+          smooshMapper
+      );
+
+      try (final ColumnarInts column = columnSupplier.get()) {
+        Assert.assertEquals(numRows, column.size());
+      }
+    }
+  }
+
   // this test takes ~30 minutes to run
   @Ignore
   @Test
@@ -167,7 +224,9 @@ public class CompressedColumnarIntsSerializerTest
           "test",
           CompressedColumnarIntsSupplier.MAX_INTS_IN_BUFFER,
           byteOrder,
-          compressionStrategy
+          compressionStrategy,
+          GenericIndexedWriter.MAX_FILE_SIZE,
+          segmentWriteOutMedium.getCloser()
       );
       serializer.open();
 
@@ -196,7 +255,9 @@ public class CompressedColumnarIntsSerializerTest
         "test",
         chunkFactor,
         byteOrder,
-        compressionStrategy
+        compressionStrategy,
+        GenericIndexedWriter.MAX_FILE_SIZE,
+        segmentWriteOutMedium.getCloser()
     );
     CompressedColumnarIntsSupplier supplierFromList = CompressedColumnarIntsSupplier.fromList(
         IntArrayList.wrap(vals),
@@ -219,7 +280,8 @@ public class CompressedColumnarIntsSerializerTest
     // read from ByteBuffer and check values
     CompressedColumnarIntsSupplier supplierFromByteBuffer = CompressedColumnarIntsSupplier.fromByteBuffer(
         ByteBuffer.wrap(IOUtils.toByteArray(writeOutBytes.asInputStream())),
-        byteOrder
+        byteOrder,
+        null
     );
     ColumnarInts columnarInts = supplierFromByteBuffer.get();
     Assert.assertEquals(vals.length, columnarInts.size());
@@ -227,6 +289,7 @@ public class CompressedColumnarIntsSerializerTest
       Assert.assertEquals(vals[i], columnarInts.get(i));
     }
     CloseableUtils.closeAndWrapExceptions(columnarInts);
+    CloseableUtils.closeAndWrapExceptions(segmentWriteOutMedium);
   }
 
   private void checkV2SerializedSizeAndData(int chunkFactor) throws Exception
@@ -236,7 +299,6 @@ public class CompressedColumnarIntsSerializerTest
 
     CompressedColumnarIntsSerializer writer = new CompressedColumnarIntsSerializer(
         "test",
-        segmentWriteOutMedium,
         chunkFactor,
         byteOrder,
         compressionStrategy,
@@ -244,14 +306,15 @@ public class CompressedColumnarIntsSerializerTest
             segmentWriteOutMedium,
             "test",
             compressionStrategy,
-            Long.BYTES * 10000
-        )
+            Long.BYTES * 10000,
+            GenericIndexedWriter.MAX_FILE_SIZE,
+            segmentWriteOutMedium.getCloser()
+        ),
+        segmentWriteOutMedium.getCloser()
     );
 
     writer.open();
-    for (int val : vals) {
-      writer.addValue(val);
-    }
+    writer.addValues(vals, 0, vals.length);
     final SmooshedWriter channel = smoosher.addWithSmooshedWriter("test", writer.getSerializedSize());
     writer.writeTo(channel, smoosher);
     channel.close();
@@ -262,7 +325,8 @@ public class CompressedColumnarIntsSerializerTest
     // read from ByteBuffer and check values
     CompressedColumnarIntsSupplier supplierFromByteBuffer = CompressedColumnarIntsSupplier.fromByteBuffer(
         mapper.mapFile("test"),
-        byteOrder
+        byteOrder,
+        null
     );
     ColumnarInts columnarInts = supplierFromByteBuffer.get();
     Assert.assertEquals(vals.length, columnarInts.size());

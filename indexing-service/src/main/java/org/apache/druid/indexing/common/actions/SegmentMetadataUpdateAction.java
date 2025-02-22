@@ -20,7 +20,6 @@
 package org.apache.druid.indexing.common.actions;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.collect.ImmutableSet;
@@ -38,7 +37,6 @@ import java.util.stream.Collectors;
 
 public class SegmentMetadataUpdateAction implements TaskAction<Void>
 {
-  @JsonIgnore
   private final Set<DataSegment> segments;
 
   @JsonCreator
@@ -58,7 +56,7 @@ public class SegmentMetadataUpdateAction implements TaskAction<Void>
   @Override
   public TypeReference<Void> getReturnTypeReference()
   {
-    return new TypeReference<Void>() {};
+    return new TypeReference<>() {};
   }
 
   @Override
@@ -99,12 +97,6 @@ public class SegmentMetadataUpdateAction implements TaskAction<Void>
     }
 
     return null;
-  }
-
-  @Override
-  public boolean isAudited()
-  {
-    return true;
   }
 
   @Override

@@ -32,6 +32,7 @@ import org.apache.druid.msq.input.ReadableInputs;
 import org.apache.druid.msq.input.table.RichSegmentDescriptor;
 import org.apache.druid.msq.input.table.SegmentWithDescriptor;
 import org.apache.druid.query.LookupDataSource;
+import org.apache.druid.segment.CompleteSegment;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentWrangler;
 import org.apache.druid.timeline.SegmentId;
@@ -98,10 +99,9 @@ public class LookupInputSliceReader implements InputSliceReader
                         throw new ISE("Lookup[%s] has multiple segments; cannot read", lookupName);
                       }
 
-                      return ResourceHolder.fromCloseable(segment);
+                      return ResourceHolder.fromCloseable(new CompleteSegment(null, segment));
                     },
-                    null,
-                    new RichSegmentDescriptor(SegmentId.dummy(lookupName).toDescriptor(), null, null)
+                    new RichSegmentDescriptor(SegmentId.dummy(lookupName).toDescriptor(), null)
                 )
             )
         )

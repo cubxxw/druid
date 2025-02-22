@@ -193,7 +193,7 @@ public abstract class SeekableStreamSamplerSpec<PartitionIdType, SequenceOffsetT
     @Override
     public CloseableIterator<InputRow> read()
     {
-      return new CloseableIterator<InputRow>()
+      return new CloseableIterator<>()
       {
 
         @Override
@@ -225,7 +225,7 @@ public abstract class SeekableStreamSamplerSpec<PartitionIdType, SequenceOffsetT
     @Override
     public CloseableIterator<InputRowListPlusRawValues> sample()
     {
-      return new CloseableIterator<InputRowListPlusRawValues>()
+      return new CloseableIterator<>()
       {
         @Override
         public boolean hasNext()
@@ -236,7 +236,8 @@ public abstract class SeekableStreamSamplerSpec<PartitionIdType, SequenceOffsetT
         @Override
         public InputRowListPlusRawValues next()
         {
-          final ByteBuffer bb = ((ByteEntity) entityIterator.next()).getBuffer();
+          // We need to modify the position of the buffer, so duplicate it.
+          final ByteBuffer bb = ((ByteEntity) entityIterator.next()).getBuffer().duplicate();
 
           final Map<String, Object> rawColumns;
           try {

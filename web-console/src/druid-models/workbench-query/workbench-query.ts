@@ -18,10 +18,11 @@
 
 import type {
   QueryParameter,
+  QueryPayload,
   SqlClusteredByClause,
   SqlExpression,
   SqlPartitionedByClause,
-} from '@druid-toolkit/query';
+} from 'druid-query-toolkit';
 import {
   C,
   F,
@@ -29,13 +30,13 @@ import {
   SqlOrderByClause,
   SqlOrderByExpression,
   SqlQuery,
-} from '@druid-toolkit/query';
+} from 'druid-query-toolkit';
 import Hjson from 'hjson';
 import * as JSONBig from 'json-bigint-native';
 import { v4 as uuidv4 } from 'uuid';
 
 import type { RowColumn } from '../../utils';
-import { deleteKeys } from '../../utils';
+import { caseInsensitiveEquals, deleteKeys } from '../../utils';
 import type { DruidEngine } from '../druid-engine/druid-engine';
 import { validDruidEngine } from '../druid-engine/druid-engine';
 import type { LastExecution } from '../execution/execution';
@@ -94,6 +95,8 @@ export class WorkbenchQuery {
     partitionedByHint: string | undefined,
     arrayMode: ArrayMode,
   ): WorkbenchQuery {
+    const queryContext: QueryContext = {};
+    if (arrayMode === 'arrays') queryContext.arrayIngestMode = 'array';
     return new WorkbenchQuery({
       queryString: ingestQueryPatternToQuery(
         externalConfigToIngestQueryPattern(
@@ -103,9 +106,7 @@ export class WorkbenchQuery {
           arrayMode,
         ),
       ).toString(),
-      queryContext: {
-        arrayIngestMode: 'array',
-      },
+      queryContext,
     });
   }
 
@@ -114,7 +115,7 @@ export class WorkbenchQuery {
     const headers: string[] = [];
     const bodies: string[] = [];
     for (const part of parts) {
-      const m = part.match(/^===== (Helper:.+|Query|Context) =====$/);
+      const m = /^===== (Helper:.+|Query|Context) =====$/.exec(part);
       if (m) {
         headers.push(m[1]);
       } else {
@@ -150,15 +151,16 @@ export class WorkbenchQuery {
     return WorkbenchQuery.enabledQueryEngines;
   }
 
-  static fromEffectiveQueryAndContext(queryString: string, context: QueryContext): WorkbenchQuery {
+  static fromTaskQueryAndContext(queryString: string, context: QueryContext): WorkbenchQuery {
     const noSqlOuterLimit = typeof context['sqlOuterLimit'] === 'undefined';
-    const cleanContext = deleteKeys(context, ['sqlOuterLimit']);
+    const cleanContext = deleteKeys(context, ['sqlOuterLimit', '__resultFormat']);
 
     let retQuery = WorkbenchQuery.blank()
+      .changeEngine('sql-msq-task')
       .changeQueryString(queryString)
       .changeQueryContext(cleanContext);
 
-    if (noSqlOuterLimit && !retQuery.getIngestDatasource()) {
+    if (noSqlOuterLimit && !retQuery.isIngestQuery()) {
       retQuery = retQuery.changeUnlimited(true);
     }
 
@@ -212,30 +214,13 @@ export class WorkbenchQuery {
   }
 
   static getRowColumnFromIssue(issue: string): RowColumn | undefined {
-    const m = issue.match(/at line (\d+),(\d+)/);
+    const m = /at line (\d+),(\d+)/.exec(issue);
     if (!m) return;
     return { row: Number(m[1]) - 1, column: Number(m[2]) - 1 };
   }
 
   static isTaskEngineNeeded(queryString: string): boolean {
     return /EXTERN\s*\(|(?:INSERT|REPLACE)\s+INTO/im.test(queryString);
-  }
-
-  static getIngestDatasourceFromQueryFragment(queryFragment: string): string | undefined {
-    // Assuming the queryFragment is no parsable find the prefix that look like:
-    // REPLACE<space>INTO<space><whatever><space>SELECT<space or EOF>
-    const matchInsertReplaceIndex = queryFragment.match(/(?:INSERT|REPLACE)\s+INTO/i)?.index;
-    if (typeof matchInsertReplaceIndex !== 'number') return;
-
-    const queryStartingWithInsertOrReplace = queryFragment.substring(matchInsertReplaceIndex);
-
-    const matchEnd = queryStartingWithInsertOrReplace.match(/\(|\b(?:SELECT|WITH)\b|$/i);
-    const fragmentQuery = SqlQuery.maybeParse(
-      queryStartingWithInsertOrReplace.substring(0, matchEnd?.index) + ' SELECT * FROM t',
-    );
-    if (!fragmentQuery) return;
-
-    return fragmentQuery.getIngestTable()?.getName();
   }
 
   public readonly queryString: string;
@@ -409,21 +394,17 @@ export class WorkbenchQuery {
     }
   }
 
-  public getIngestDatasource(): string | undefined {
-    if (this.getEffectiveEngine() !== 'sql-msq-task') return;
+  public isIngestQuery(): boolean {
+    if (this.getEffectiveEngine() !== 'sql-msq-task') return false;
 
     const { queryString, parsedQuery } = this;
     if (parsedQuery) {
-      return parsedQuery.getIngestTable()?.getName();
+      return Boolean(parsedQuery.getIngestTable());
     }
 
-    if (this.isJsonLike()) return;
+    if (this.isJsonLike()) return false;
 
-    return WorkbenchQuery.getIngestDatasourceFromQueryFragment(queryString);
-  }
-
-  public isIngestQuery(): boolean {
-    return Boolean(this.getIngestDatasource());
+    return /(?:INSERT|REPLACE|MERGE)\s+INTO/i.test(queryString);
   }
 
   public toggleUnlimited(): WorkbenchQuery {
@@ -467,7 +448,7 @@ export class WorkbenchQuery {
 
   public getApiQuery(makeQueryId: () => string = uuidv4): {
     engine: DruidEngine;
-    query: Record<string, any>;
+    query: QueryPayload;
     prefixLines: number;
     cancelQueryId?: string;
   } {
@@ -499,7 +480,7 @@ export class WorkbenchQuery {
       };
     }
 
-    let apiQuery: Record<string, any> = {};
+    let apiQuery: QueryPayload;
     if (this.isJsonLike()) {
       try {
         apiQuery = Hjson.parse(queryString);
@@ -532,7 +513,11 @@ export class WorkbenchQuery {
     }
 
     const ingestQuery = this.isIngestQuery();
-    if (!unlimited && !ingestQuery && queryContext.selectDestination !== 'durableStorage') {
+    if (
+      !unlimited &&
+      !ingestQuery &&
+      !caseInsensitiveEquals(queryContext.selectDestination, 'durableStorage')
+    ) {
       apiQuery.context ||= {};
       apiQuery.context.sqlOuterLimit = 1001;
     }
@@ -543,7 +528,7 @@ export class WorkbenchQuery {
     };
 
     let cancelQueryId: string | undefined;
-    if (engine === 'sql-native') {
+    if (engine === 'sql-native' || engine === 'sql-msq-dart') {
       cancelQueryId = apiQuery.context.sqlQueryId;
       if (!cancelQueryId) {
         // If the sqlQueryId is not explicitly set on the context generate one, so it is possible to cancel the query.
@@ -563,6 +548,10 @@ export class WorkbenchQuery {
 
     if (engine === 'sql-native' || engine === 'sql-msq-task') {
       apiQuery.context.sqlStringifyArrays ??= false;
+    }
+
+    if (engine === 'sql-msq-dart') {
+      apiQuery.context.fullReport ??= true;
     }
 
     if (Array.isArray(queryParameters) && queryParameters.length) {

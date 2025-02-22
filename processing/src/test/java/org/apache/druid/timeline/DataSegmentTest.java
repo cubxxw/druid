@@ -23,14 +23,21 @@ import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.RangeSet;
 import org.apache.druid.data.input.impl.DimensionsSpec;
+import org.apache.druid.indexer.granularity.GranularitySpec;
 import org.apache.druid.indexer.partitions.DynamicPartitionsSpec;
 import org.apache.druid.indexer.partitions.HashedPartitionsSpec;
 import org.apache.druid.jackson.DefaultObjectMapper;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.jackson.JacksonUtils;
+import org.apache.druid.query.aggregation.AggregatorFactory;
+import org.apache.druid.query.aggregation.CountAggregatorFactory;
+import org.apache.druid.query.filter.SelectorDimFilter;
+import org.apache.druid.segment.IndexSpec;
+import org.apache.druid.segment.transform.CompactionTransformSpec;
 import org.apache.druid.timeline.DataSegment.PruneSpecsHolder;
 import org.apache.druid.timeline.partition.NoneShardSpec;
 import org.apache.druid.timeline.partition.NumberedShardSpec;
@@ -44,9 +51,10 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
  */
@@ -126,10 +134,10 @@ public class DataSegmentTest
             new DimensionsSpec(
                 DimensionsSpec.getDefaultSchemas(ImmutableList.of("dim1", "bar", "foo"))
             ),
-            ImmutableList.of(ImmutableMap.of("type", "count", "name", "count")),
-            ImmutableMap.of("filter", ImmutableMap.of("type", "selector", "dimension", "dim1", "value", "foo")),
-            ImmutableMap.of(),
-            ImmutableMap.of()
+            ImmutableList.of(new CountAggregatorFactory("count")),
+            new CompactionTransformSpec(new SelectorDimFilter("dim1", "foo", null)),
+            MAPPER.convertValue(ImmutableMap.of(), IndexSpec.class),
+            MAPPER.convertValue(ImmutableMap.of(), GranularitySpec.class)
         ),
         TEST_VERSION,
         1
@@ -193,8 +201,8 @@ public class DataSegmentTest
             null,
             null,
             null,
-            ImmutableMap.of(),
-            ImmutableMap.of()
+            MAPPER.convertValue(ImmutableMap.of(), IndexSpec.class),
+            MAPPER.convertValue(ImmutableMap.of(), GranularitySpec.class)
         ),
         TEST_VERSION,
         1
@@ -342,10 +350,10 @@ public class DataSegmentTest
     final CompactionState compactionState = new CompactionState(
         new DynamicPartitionsSpec(null, null),
         new DimensionsSpec(DimensionsSpec.getDefaultSchemas(ImmutableList.of("bar", "foo"))),
-        ImmutableList.of(ImmutableMap.of("type", "count", "name", "count")),
-        ImmutableMap.of("filter", ImmutableMap.of("type", "selector", "dimension", "dim1", "value", "foo")),
-        Collections.singletonMap("test", "map"),
-        Collections.singletonMap("test2", "map2")
+        ImmutableList.of(new CountAggregatorFactory("count")),
+        new CompactionTransformSpec(new SelectorDimFilter("dim1", "foo", null)),
+        MAPPER.convertValue(Map.of("test", "map"), IndexSpec.class),
+        MAPPER.convertValue(Map.of("test2", "map2"), GranularitySpec.class)
     );
     final DataSegment segment1 = DataSegment.builder()
                                             .dataSource("foo")
@@ -366,6 +374,58 @@ public class DataSegmentTest
   }
 
   @Test
+  public void testAnnotateWithLastCompactionState()
+  {
+    DynamicPartitionsSpec dynamicPartitionsSpec = new DynamicPartitionsSpec(null, null);
+    DimensionsSpec dimensionsSpec = new DimensionsSpec(DimensionsSpec.getDefaultSchemas(ImmutableList.of(
+        "bar",
+        "foo"
+    )));
+    List<AggregatorFactory> metricsSpec = ImmutableList.of(new CountAggregatorFactory("count"));
+    CompactionTransformSpec transformSpec = new CompactionTransformSpec(
+        new SelectorDimFilter("dim1", "foo", null)
+    );
+    IndexSpec indexSpec = MAPPER.convertValue(Map.of("test", "map"), IndexSpec.class);
+    GranularitySpec granularitySpec = MAPPER.convertValue(Map.of("test2", "map"), GranularitySpec.class);
+
+    final CompactionState compactionState = new CompactionState(
+        dynamicPartitionsSpec,
+        dimensionsSpec,
+        metricsSpec,
+        transformSpec,
+        indexSpec,
+        granularitySpec
+    );
+
+    final Function<Set<DataSegment>, Set<DataSegment>> addCompactionStateFunction =
+        CompactionState.addCompactionStateToSegments(
+            dynamicPartitionsSpec,
+            dimensionsSpec,
+            metricsSpec,
+            transformSpec,
+            indexSpec,
+            granularitySpec
+        );
+
+    final DataSegment segment1 = DataSegment.builder()
+                                            .dataSource("foo")
+                                            .interval(Intervals.of("2012-01-01/2012-01-02"))
+                                            .version(DateTimes.of("2012-01-01T11:22:33.444Z").toString())
+                                            .shardSpec(getShardSpec(7))
+                                            .size(0)
+                                            .lastCompactionState(compactionState)
+                                            .build();
+    final DataSegment segment2 = DataSegment.builder()
+                                            .dataSource("foo")
+                                            .interval(Intervals.of("2012-01-01/2012-01-02"))
+                                            .version(DateTimes.of("2012-01-01T11:22:33.444Z").toString())
+                                            .shardSpec(getShardSpec(7))
+                                            .size(0)
+                                            .build();
+    Assert.assertEquals(ImmutableSet.of(segment1), addCompactionStateFunction.apply(ImmutableSet.of(segment2)));
+  }
+
+  @Test
   public void testTombstoneType()
   {
 
@@ -374,7 +434,7 @@ public class DataSegmentTest
                                             .interval(Intervals.of("2012-01-01/2012-01-02"))
                                             .version(DateTimes.of("2012-01-01T11:22:33.444Z").toString())
                                             .shardSpec(new TombstoneShardSpec())
-                                            .loadSpec(Collections.singletonMap(
+                                            .loadSpec(Map.of(
                                                 "type",
                                                 DataSegment.TOMBSTONE_LOADSPEC_TYPE
                                             ))
@@ -388,7 +448,7 @@ public class DataSegmentTest
                                             .interval(Intervals.of("2012-01-01/2012-01-02"))
                                             .version(DateTimes.of("2012-01-01T11:22:33.444Z").toString())
                                             .shardSpec(getShardSpec(7))
-                                            .loadSpec(Collections.singletonMap(
+                                            .loadSpec(Map.of(
                                                 "type",
                                                 "foo"
                                             ))

@@ -20,12 +20,12 @@
 package org.apache.druid.msq.querykit.scan;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import it.unimi.dsi.fastutil.ints.IntSet;
 import org.apache.druid.collections.ResourceHolder;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.Frame;
 import org.apache.druid.frame.channel.FrameWithPartition;
 import org.apache.druid.frame.channel.ReadableFrameChannel;
@@ -38,45 +38,47 @@ import org.apache.druid.frame.segment.FrameSegment;
 import org.apache.druid.frame.util.SettableLongVirtualColumn;
 import org.apache.druid.frame.write.FrameWriter;
 import org.apache.druid.frame.write.FrameWriterFactory;
+import org.apache.druid.frame.write.InvalidFieldException;
 import org.apache.druid.frame.write.InvalidNullByteException;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.java.util.common.Unit;
-import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.java.util.common.guava.Yielder;
 import org.apache.druid.java.util.common.guava.Yielders;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.common.logger.Logger;
-import org.apache.druid.msq.exec.LoadedSegmentDataProvider;
+import org.apache.druid.msq.exec.DataServerQueryHandler;
+import org.apache.druid.msq.exec.DataServerQueryResult;
 import org.apache.druid.msq.input.ParseExceptionUtils;
 import org.apache.druid.msq.input.ReadableInput;
 import org.apache.druid.msq.input.external.ExternalSegment;
 import org.apache.druid.msq.input.table.SegmentWithDescriptor;
+import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.querykit.BaseLeafFrameProcessor;
 import org.apache.druid.msq.querykit.QueryKitUtils;
 import org.apache.druid.query.Druids;
 import org.apache.druid.query.IterableRowsCursorHelper;
-import org.apache.druid.query.filter.Filter;
+import org.apache.druid.query.Order;
 import org.apache.druid.query.scan.ScanQuery;
+import org.apache.druid.query.scan.ScanQueryEngine;
 import org.apache.druid.query.scan.ScanResultValue;
-import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.ColumnSelectorFactory;
+import org.apache.druid.segment.CompleteSegment;
 import org.apache.druid.segment.Cursor;
+import org.apache.druid.segment.CursorFactory;
+import org.apache.druid.segment.CursorHolder;
 import org.apache.druid.segment.Segment;
 import org.apache.druid.segment.SegmentReference;
 import org.apache.druid.segment.SimpleAscendingOffset;
 import org.apache.druid.segment.SimpleSettableOffset;
-import org.apache.druid.segment.StorageAdapter;
 import org.apache.druid.segment.VirtualColumn;
 import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.segment.filter.Filters;
 import org.apache.druid.timeline.SegmentId;
-import org.joda.time.Interval;
 
 import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
@@ -86,6 +88,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * A {@link FrameProcessor} that reads one {@link Frame} at a time from a particular segment, writes them
@@ -102,10 +105,12 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   private final Closer closer = Closer.create();
 
   private Cursor cursor;
+  private Closeable cursorCloser;
   private Segment segment;
   private final SimpleSettableOffset cursorOffset = new SimpleAscendingOffset(Integer.MAX_VALUE);
   private FrameWriter frameWriter;
   private long currentAllocatorCapacity; // Used for generating FrameRowTooLargeException if needed
+  private SegmentsInputSlice handedOffSegments = null;
 
   public ScanQueryFrameProcessor(
       final ScanQuery query,
@@ -132,7 +137,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     frameWriterVirtualColumns.add(partitionBoostVirtualColumn);
 
     final VirtualColumn segmentGranularityVirtualColumn =
-        QueryKitUtils.makeSegmentGranularityVirtualColumn(jsonMapper, query);
+        QueryKitUtils.makeSegmentGranularityVirtualColumn(jsonMapper, query.context());
 
     if (segmentGranularityVirtualColumn != null) {
       frameWriterVirtualColumns.add(segmentGranularityVirtualColumn);
@@ -144,12 +149,6 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   @Override
   public ReturnOrAwait<Object> runIncrementally(final IntSet readableInputs) throws IOException
   {
-    final boolean legacy = Preconditions.checkNotNull(query.isLegacy(), "Expected non-null 'legacy' parameter");
-
-    if (legacy) {
-      throw new ISE("Cannot use this engine in legacy mode");
-    }
-
     if (runningCountForLimit != null
         && runningCountForLimit.get() > query.getScanRowsOffset() + query.getScanRowsLimit()) {
       return ReturnOrAwait.returnObject(Unit.instance());
@@ -161,6 +160,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   @Override
   public void cleanup() throws IOException
   {
+    closer.register(cursorCloser);
     closer.register(frameWriter);
     closer.register(super::cleanup);
     closer.close();
@@ -181,7 +181,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
    */
   private static ScanQuery prepareScanQueryForDataServer(@NotNull ScanQuery scanQuery)
   {
-    if (ScanQuery.Order.NONE.equals(scanQuery.getTimeOrder()) && !scanQuery.getOrderBys().isEmpty()) {
+    if (Order.NONE.equals(scanQuery.getTimeOrder()) && !scanQuery.getOrderBys().isEmpty()) {
       return Druids.ScanQueryBuilder.copy(scanQuery)
                                     .orderBy(ImmutableList.of())
                                     .limit(0)
@@ -192,39 +192,45 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   }
 
   @Override
-  protected ReturnOrAwait<Unit> runWithLoadedSegment(final SegmentWithDescriptor segment) throws IOException
+  protected ReturnOrAwait<SegmentsInputSlice> runWithDataServerQuery(final DataServerQueryHandler dataServerQueryHandler) throws IOException
   {
     if (cursor == null) {
       ScanQuery preparedQuery = prepareScanQueryForDataServer(query);
-      final Pair<LoadedSegmentDataProvider.DataServerQueryStatus, Yielder<Object[]>> statusSequencePair =
-          segment.fetchRowsFromDataServer(
+      final DataServerQueryResult<Object[]> dataServerQueryResult =
+          dataServerQueryHandler.fetchRowsFromDataServer(
               preparedQuery,
               ScanQueryFrameProcessor::mappingFunction,
               closer
           );
-      if (LoadedSegmentDataProvider.DataServerQueryStatus.HANDOFF.equals(statusSequencePair.lhs)) {
-        log.info("Segment[%s] was handed off, falling back to fetching the segment from deep storage.",
-                 segment.getDescriptor());
-        return runWithSegment(segment);
+      handedOffSegments = dataServerQueryResult.getHandedOffSegments();
+      if (!handedOffSegments.getDescriptors().isEmpty()) {
+        log.info(
+            "Query to dataserver for segments found [%d] handed off segments",
+            handedOffSegments.getDescriptors().size()
+        );
       }
-
       RowSignature rowSignature = ScanQueryKit.getAndValidateSignature(preparedQuery, jsonMapper);
-      Pair<Cursor, Closeable> cursorFromIterable = IterableRowsCursorHelper.getCursorFromYielder(
-          statusSequencePair.rhs,
-          rowSignature
-      );
+      List<Cursor> cursors = dataServerQueryResult.getResultsYielders().stream().map(yielder -> {
+        Pair<Cursor, Closeable> cursorFromIterable = IterableRowsCursorHelper.getCursorFromYielder(
+            yielder,
+            rowSignature
+        );
+        closer.register(cursorFromIterable.rhs);
+        return cursorFromIterable.lhs;
+      }).collect(Collectors.toList());
 
-      closer.register(cursorFromIterable.rhs);
-      final Yielder<Cursor> cursorYielder = Yielders.each(Sequences.simple(ImmutableList.of(cursorFromIterable.lhs)));
+      final Yielder<Cursor> cursorYielder = Yielders.each(Sequences.simple(cursors));
 
       if (cursorYielder.isDone()) {
         // No cursors!
         cursorYielder.close();
-        return ReturnOrAwait.returnObject(Unit.instance());
+        return ReturnOrAwait.returnObject(handedOffSegments);
       } else {
-        final long rowsFlushed = setNextCursor(cursorYielder.get(), null);
-        assert rowsFlushed == 0; // There's only ever one cursor when running with a segment
+        final long rowsFlushed = setNextCursor(cursorYielder.get(), null, null);
         closer.register(cursorYielder);
+        if (rowsFlushed > 0) {
+          return ReturnOrAwait.runAgain();
+        }
       }
     }
 
@@ -235,7 +241,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
 
     if (cursor.isDone() && (frameWriter == null || frameWriter.getNumRows() == 0)) {
-      return ReturnOrAwait.returnObject(Unit.instance());
+      return ReturnOrAwait.returnObject(handedOffSegments);
     } else {
       return ReturnOrAwait.runAgain();
     }
@@ -245,23 +251,32 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   protected ReturnOrAwait<Unit> runWithSegment(final SegmentWithDescriptor segment) throws IOException
   {
     if (cursor == null) {
-      final ResourceHolder<Segment> segmentHolder = closer.register(segment.getOrLoad());
+      final ResourceHolder<CompleteSegment> segmentHolder = closer.register(segment.getOrLoad());
 
-      final Yielder<Cursor> cursorYielder = Yielders.each(
-          makeCursors(
-              query.withQuerySegmentSpec(new SpecificSegmentSpec(segment.getDescriptor())),
-              mapSegment(segmentHolder.get()).asStorageAdapter()
-          )
-      );
+      final Segment mappedSegment = mapSegment(segmentHolder.get().getSegment());
+      final CursorFactory cursorFactory = mappedSegment.asCursorFactory();
+      if (cursorFactory == null) {
+        throw new ISE(
+            "Null cursor factory found. Probably trying to issue a query against a segment being memory unmapped."
+        );
+      }
 
-      if (cursorYielder.isDone()) {
+      final CursorHolder nextCursorHolder =
+          cursorFactory.makeCursorHolder(
+              ScanQueryEngine.makeCursorBuildSpec(
+                  query.withQuerySegmentSpec(new SpecificSegmentSpec(segment.getDescriptor())),
+                  null
+              )
+          );
+      final Cursor nextCursor = nextCursorHolder.asCursor();
+
+      if (nextCursor == null) {
         // No cursors!
-        cursorYielder.close();
+        nextCursorHolder.close();
         return ReturnOrAwait.returnObject(Unit.instance());
       } else {
-        final long rowsFlushed = setNextCursor(cursorYielder.get(), segmentHolder.get());
+        final long rowsFlushed = setNextCursor(nextCursor, nextCursorHolder, segmentHolder.get().getSegment());
         assert rowsFlushed == 0; // There's only ever one cursor when running with a segment
-        closer.register(cursorYielder);
       }
     }
 
@@ -289,15 +304,30 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
         final Frame frame = inputChannel.read();
         final FrameSegment frameSegment = new FrameSegment(frame, inputFrameReader, SegmentId.dummy("scan"));
 
-        final long rowsFlushed = setNextCursor(
-            Iterables.getOnlyElement(
-                makeCursors(
-                    query.withQuerySegmentSpec(new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY)),
-                    mapSegment(frameSegment).asStorageAdapter()
-                ).toList()
-            ),
-            frameSegment
-        );
+        final Segment mappedSegment = mapSegment(frameSegment);
+        final CursorFactory cursorFactory = mappedSegment.asCursorFactory();
+        if (cursorFactory == null) {
+          throw new ISE(
+              "Null cursor factory found. Probably trying to issue a query against a segment being memory unmapped."
+          );
+        }
+
+        if (!Intervals.ONLY_ETERNITY.equals(query.getIntervals())) {
+          // runWithInputChannel is for running on subquery results, where we don't expect to see "intervals" set.
+          // The SQL planner avoid it for subqueries; see DruidQuery#canUseIntervalFiltering.
+          throw DruidException.defensive("Expected eternity intervals, but got[%s]", query.getIntervals());
+        }
+
+        final CursorHolder nextCursorHolder =
+            cursorFactory.makeCursorHolder(ScanQueryEngine.makeCursorBuildSpec(query, null));
+        final Cursor nextCursor = nextCursorHolder.asCursor();
+
+        if (nextCursor == null) {
+          // no cursor
+          nextCursorHolder.close();
+          return ReturnOrAwait.returnObject(Unit.instance());
+        }
+        final long rowsFlushed = setNextCursor(nextCursor, nextCursorHolder, frameSegment);
 
         if (rowsFlushed > 0) {
           return ReturnOrAwait.runAgain();
@@ -330,6 +360,13 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
     catch (InvalidNullByteException inbe) {
       InvalidNullByteException.Builder builder = InvalidNullByteException.builder(inbe);
+      throw
+          builder.source(ParseExceptionUtils.generateReadableInputSourceNameFromMappedSegment(this.segment)) // frame segment
+                 .rowNumber(this.cursorOffset.getOffset() + 1)
+                 .build();
+    }
+    catch (InvalidFieldException ffwe) {
+      InvalidFieldException.Builder builder = InvalidFieldException.builder(ffwe);
       throw
           builder.source(ParseExceptionUtils.generateReadableInputSourceNameFromMappedSegment(this.segment)) // frame segment
                  .rowNumber(this.cursorOffset.getOffset() + 1)
@@ -394,10 +431,20 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
   }
 
-  private long setNextCursor(final Cursor cursor, final Segment segment) throws IOException
+  private long setNextCursor(
+      final Cursor cursor,
+      @Nullable final Closeable cursorCloser,
+      final Segment segment
+  ) throws IOException
   {
     final long rowsFlushed = flushFrameWriter();
+    if (this.cursorCloser != null) {
+      // Close here, don't add to the processor-level Closer, to avoid leaking CursorHolders. We may generate many
+      // CursorHolders per instance of this processor, and we need to close them as we go, not all at the end.
+      this.cursorCloser.close();
+    }
     this.cursor = cursor;
+    this.cursorCloser = cursorCloser;
     this.segment = segment;
     this.cursorOffset.reset();
     return rowsFlushed;
@@ -417,28 +464,5 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
       );
     }
     return baseColumnSelectorFactory;
-  }
-
-  private static Sequence<Cursor> makeCursors(final ScanQuery query, final StorageAdapter adapter)
-  {
-    if (adapter == null) {
-      throw new ISE(
-          "Null storage adapter found. Probably trying to issue a query against a segment being memory unmapped."
-      );
-    }
-
-    final List<Interval> intervals = query.getQuerySegmentSpec().getIntervals();
-    Preconditions.checkArgument(intervals.size() == 1, "Can only handle a single interval, got[%s]", intervals);
-
-    final Filter filter = Filters.convertToCNFFromQueryContext(query, Filters.toFilter(query.getFilter()));
-
-    return adapter.makeCursors(
-        filter,
-        intervals.get(0),
-        query.getVirtualColumns(),
-        Granularities.ALL,
-        ScanQuery.Order.DESCENDING.equals(query.getTimeOrder()),
-        null
-    );
   }
 }

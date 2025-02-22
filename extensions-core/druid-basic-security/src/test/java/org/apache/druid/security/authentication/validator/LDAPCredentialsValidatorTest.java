@@ -36,7 +36,6 @@ import javax.naming.directory.SearchControls;
 import javax.naming.directory.SearchResult;
 import javax.naming.ldap.LdapContext;
 import javax.naming.spi.InitialContextFactory;
-
 import java.util.Collections;
 import java.util.Hashtable;
 import java.util.Iterator;
@@ -94,6 +93,7 @@ public class LDAPCredentialsValidatorTest
         properties
     );
     validator.validateCredentials("ldap", "ldap", "validUser", "password".toCharArray());
+    validator.validateCredentials("ldap", "ldap", "validUser", "password".toCharArray());
   }
 
   public static class MockContextFactory implements InitialContextFactory
@@ -114,7 +114,7 @@ public class LDAPCredentialsValidatorTest
               ArgumentMatchers.eq(LDAP_CONFIG.getBaseDn()),
               ArgumentMatchers.eq(StringUtils.format(LDAP_CONFIG.getUserSearch(), encodedUsername)),
               ArgumentMatchers.any(SearchControls.class))
-      ).thenReturn(new NamingEnumeration<SearchResult>()
+      ).thenReturn(new NamingEnumeration<>()
       {
         @Override
         public SearchResult next()

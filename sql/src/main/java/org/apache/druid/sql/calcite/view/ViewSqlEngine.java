@@ -51,7 +51,7 @@ public class ViewSqlEngine implements SqlEngine
   }
 
   @Override
-  public boolean featureAvailable(EngineFeature feature, PlannerContext plannerContext)
+  public boolean featureAvailable(EngineFeature feature)
   {
     switch (feature) {
       // Use most permissive set of SELECT features, since our goal is to get the row type of the view.
@@ -68,6 +68,7 @@ public class ViewSqlEngine implements SqlEngine
       case ALLOW_TOP_LEVEL_UNION_ALL:
         return true;
       // Views can't sit on top of INSERT or REPLACE.
+      case WINDOW_LEAF_OPERATOR:
       case CAN_INSERT:
       case CAN_REPLACE:
         return false;
@@ -77,6 +78,7 @@ public class ViewSqlEngine implements SqlEngine
       case TIMESERIES_QUERY:
       case TIME_BOUNDARY_QUERY:
       case SCAN_NEEDS_SIGNATURE:
+      case GROUPBY_IMPLICITLY_SORTS:
         return false;
 
       default:
@@ -91,13 +93,21 @@ public class ViewSqlEngine implements SqlEngine
   }
 
   @Override
-  public RelDataType resultTypeForSelect(RelDataTypeFactory typeFactory, RelDataType validatedRowType)
+  public RelDataType resultTypeForSelect(
+      RelDataTypeFactory typeFactory,
+      RelDataType validatedRowType,
+      Map<String, Object> queryContext
+  )
   {
     return validatedRowType;
   }
 
   @Override
-  public RelDataType resultTypeForInsert(RelDataTypeFactory typeFactory, RelDataType validatedRowType)
+  public RelDataType resultTypeForInsert(
+      RelDataTypeFactory typeFactory,
+      RelDataType validatedRowType,
+      Map<String, Object> queryContext
+  )
   {
     // Can't have views of INSERT or REPLACE statements.
     throw new UnsupportedOperationException();
