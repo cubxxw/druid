@@ -1,0 +1,356 @@
+# Instincts generated from https://github.com/cubxxw/druid
+# Generated: 2026-05-01T17:01:39.303Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: druid-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/cubxxw/druid
+---
+
+# Druid Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: feat
+
+## Evidence
+
+- 1 commits analyzed
+- Detected conventional commit pattern
+- Examples: feat: add PartialQueryableIndex for loading columns on demand (#19383)
+
+---
+id: druid-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/cubxxw/druid
+---
+
+# Druid Commit Length
+
+## Action
+
+Write moderate-length commit messages (~70 characters)
+
+## Evidence
+
+- Average commit message length: 70 chars
+- Based on 1 commits
+
+---
+id: druid-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/cubxxw/druid
+---
+
+# Druid Naming Files
+
+## Action
+
+Use PascalCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: PascalCase
+
+---
+id: druid-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/cubxxw/druid
+---
+
+# Druid Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: druid-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/cubxxw/druid
+---
+
+# Druid Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: druid-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/cubxxw/druid
+---
+
+# Druid Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: druid-instinct-camelcase-functions
+trigger: "When naming a function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Camelcase Functions
+
+## Action
+
+Use camelCase for the function name
+
+## Evidence
+
+- Pattern in namingConventions.functions: camelCase
+
+---
+id: druid-instinct-pascalcase-classes
+trigger: "When naming a class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Pascalcase Classes
+
+## Action
+
+Use PascalCase for the class name
+
+## Evidence
+
+- Pattern in namingConventions.classes: PascalCase
+
+---
+id: druid-instinct-screaming-constants
+trigger: "When naming a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Screaming Constants
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for the constant name
+
+## Evidence
+
+- Pattern in namingConventions.constants: SCREAMING_SNAKE_CASE
+
+---
+id: druid-instinct-pascalcase-files
+trigger: "When naming a file"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Pascalcase Files
+
+## Action
+
+Use PascalCase for the file name
+
+## Evidence
+
+- Pattern in namingConventions.files: PascalCase
+
+---
+id: druid-instinct-relative-imports
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Relative Imports
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle: relative
+
+---
+id: druid-instinct-named-exports
+trigger: "When exporting from a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Named Exports
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle: named
+
+---
+id: druid-instinct-java-language
+trigger: "When writing code"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Java Language
+
+## Action
+
+Use Java as the implementation language
+
+## Evidence
+
+- Pattern in language: Java
+
+---
+id: druid-instinct-unit-test-pattern
+trigger: "When adding a test file"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Unit Test Pattern
+
+## Action
+
+Name the file with the pattern *.test.ts
+
+## Evidence
+
+- Pattern in filePattern: *.test.ts
+
+---
+id: druid-instinct-unit-test-type
+trigger: "When writing tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Unit Test Type
+
+## Action
+
+Write unit tests
+
+## Evidence
+
+- Pattern in testTypes: unit
+
+---
+id: druid-instinct-no-coverage-config
+trigger: "When configuring test coverage"
+confidence: 0.6
+domain: testing
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct No Coverage Config
+
+## Action
+
+Do not add a coverage configuration file
+
+## Evidence
+
+- Pattern in coverageConfig: false
+
+---
+id: druid-instinct-conventional-commits-feat
+trigger: "When making a commit for a new feature"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Conventional Commits Feat
+
+## Action
+
+Start the commit message with 'feat:'
+
+## Evidence
+
+- Pattern in commits.prefixes: feat
+- Seen in commit: feat: add PartialQueryableIndex for loading columns on demand (#19383)
+
+---
+id: druid-instinct-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: cubxxw/druid
+---
+
+# Druid Instinct Commit Length
+
+## Action
+
+Keep the commit message around 70 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength: 70
+
